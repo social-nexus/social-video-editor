@@ -128,7 +128,12 @@ export default function App() {
     setNotice(`“${item.name}” foi colocado na timeline. Duração inicial: 5 segundos (ajustável nesta etapa futura).`);
   }
 
-  function adjustSelectedClip(change: Partial<Pick<TimelineClip, "start" | "duration">>) {\n    if (!selectedClipId) return;\n    setClips((current) => current.map((clip) => clip.id === selectedClipId ? { ...clip, ...change, start: Math.max(0, change.start ?? clip.start), duration: Math.max(0.5, change.duration ?? clip.duration) } : clip));\n  }\n\n  function removeMedia(item: MediaItem) {
+  function adjustSelectedClip(change: Partial<Pick<TimelineClip, "start" | "duration">>) {
+    if (!selectedClipId) return;
+    setClips((current) => current.map((clip) => clip.id === selectedClipId ? { ...clip, ...change, start: Math.max(0, change.start ?? clip.start), duration: Math.max(0.5, change.duration ?? clip.duration) } : clip));
+  }
+
+  function removeMedia(item: MediaItem) {
     URL.revokeObjectURL(item.url);
     setMedia((current) => current.filter((entry) => entry.id !== item.id));
     setClips((current) => current.filter((clip) => clip.mediaId !== item.id));
