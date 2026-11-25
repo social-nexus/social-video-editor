@@ -33,10 +33,9 @@ export default function App() {
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
 
 
-  useState(() => {
+  useEffect(() => {
     invoke<string>("app_version").then(setAppVersion).catch(() => undefined);
-    return 0;
-  });
+  }, []);
 
   const selected = media.find((item) => item.id === selectedId) ?? null;
   const totalDuration = clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
