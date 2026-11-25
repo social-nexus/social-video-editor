@@ -31,6 +31,7 @@ export default function App() {
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [clips, setClips] = useState<TimelineClip[]>([]);
+  const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [projectName, setProjectName] = useState("Projeto sem título");
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [ratio, setRatio] = useState("9:16");
@@ -99,6 +100,7 @@ export default function App() {
     const item = media.find((entry) => entry.id === clip.mediaId);
     if (!item) return;
     setSelectedId(item.id);
+    setSelectedClipId(clip.id);
     setPreviewTime(0);
     setNotice(`Preview sincronizado com o clipe: ${item.name}`);
   }
@@ -120,11 +122,13 @@ export default function App() {
   function addToTimeline(item: MediaItem) {
     const duration = item.kind === "image" ? 5 : 5;
     const start = clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
-    setClips((current) => [...current, { id: crypto.randomUUID(), mediaId: item.id, start, duration }]);
+    const clipId = crypto.randomUUID();
+    setClips((current) => [...current, { id: clipId, mediaId: item.id, start, duration }]);
+    setSelectedClipId(clipId);
     setNotice(`“${item.name}” foi colocado na timeline. Duração inicial: 5 segundos (ajustável nesta etapa futura).`);
   }
 
-  function removeMedia(item: MediaItem) {
+  function adjustSelectedClip(change: Partial<Pick<TimelineClip, "start" | "duration">>) {\n    if (!selectedClipId) return;\n    setClips((current) => current.map((clip) => clip.id === selectedClipId ? { ...clip, ...change, start: Math.max(0, change.start ?? clip.start), duration: Math.max(0.5, change.duration ?? clip.duration) } : clip));\n  }\n\n  function removeMedia(item: MediaItem) {
     URL.revokeObjectURL(item.url);
     setMedia((current) => current.filter((entry) => entry.id !== item.id));
     setClips((current) => current.filter((clip) => clip.mediaId !== item.id));
@@ -302,7 +306,7 @@ export default function App() {
               <div className="track-row"><div className="track-label"><Video size={14} /> V1</div><div className="track-lane" style={{ width: timelineWidth }}>
                 {clips.filter((clip) => media.find((item) => item.id === clip.mediaId)?.kind !== "audio").map((clip) => {
                   const item = media.find((entry) => entry.id === clip.mediaId);
-                  return <div key={clip.id} className="timeline-clip video-clip" onClick={() => selectTimelineClip(clip)} style={{ left: clip.start * 42, width: Math.max(70, clip.duration * 42), cursor: "pointer" }} title={item?.name}><Film size={13} /><span>{item?.name ?? "Mídia não vinculada"}</span><button onClick={() => setClips((current) => current.filter((entry) => entry.id !== clip.id))}><X size={12} /></button></div>;
+                  return <div key={clip.id} className="timeline-clip video-clip" onClick={() => selectTimelineClip(clip)} style={{ left: clip.start * 42, width: Math.max(70, clip.duration * 42), cursor: "pointer", outline: selectedClipId === clip.id ? "2px solid #f6c1dd" : "none" }} title={item?.name}><Film size={13} /><span>{item?.name ?? "Mídia não vinculada"}</span><button onClick={(event) => { event.stopPropagation(); setClips((current) => current.filter((entry) => entry.id !== clip.id)); if (selectedClipId === clip.id) setSelectedClipId(null); }}><X size={12} /></button></div>;
                 })}
               </div></div>
               <div className="track-row"><div className="track-label"><Music2 size={14} /> A1</div><div className="track-lane audio-lane" style={{ width: timelineWidth }}>
