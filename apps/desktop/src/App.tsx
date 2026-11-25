@@ -90,7 +90,8 @@ export default function App() {
       setNotice("Arquivo relinkado com sucesso.");
     } catch (error) { setNotice("Não foi possível relinkar: " + String(error)); }
   }
-\n  function addToTimeline(item: MediaItem) {
+
+  function addToTimeline(item: MediaItem) {
     const duration = item.kind === "image" ? 5 : 5;
     const start = clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
     setClips((current) => [...current, { id: crypto.randomUUID(), mediaId: item.id, start, duration }]);
