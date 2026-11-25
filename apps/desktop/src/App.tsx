@@ -305,6 +305,7 @@ export default function App() {
               </div>
             </div>
             <div className="timeline-scroll">
+              {selectedClipId && clips.some((clip) => clip.id === selectedClipId) && <div className="clip-edit-controls"><span>Clipe selecionado</span><span className="clip-edit-name">{media.find((m) => m.id === clips.find((c) => c.id === selectedClipId)?.mediaId)?.name}</span><button className="button secondary compact" onClick={() => adjustSelectedClip({ start: clips.find((c) => c.id === selectedClipId)!.start - 0.5 })}>← 0,5s</button><button className="button secondary compact" onClick={() => adjustSelectedClip({ start: clips.find((c) => c.id === selectedClipId)!.start + 0.5 })}>0,5s →</button><label>Duração <input type="number" min="0.5" step="0.5" value={clips.find((c) => c.id === selectedClipId)?.duration ?? 5} onChange={(event) => adjustSelectedClip({ duration: Number(event.target.value) })} /></label></div>}
               <div className="timeline-ruler" style={{ width: timelineWidth }}>
                 {Array.from({ length: Math.max(8, Math.ceil(totalDuration) + 2) }, (_, i) => <span key={i} style={{ left: i * 42 }}>{i}s</span>)}
               </div>
