@@ -1,4 +1,11 @@
 use std::fs;
+use std::path::Path;
+
+#[derive(serde::Serialize)]
+struct MediaFileInfo {
+    exists: bool,
+    size: u64,
+}
 
 #[tauri::command]
 fn app_version() -> &'static str {
@@ -17,11 +24,21 @@ fn read_project_file(path: String) -> Result<String, String> {
         .map_err(|error| format!("Não foi possível abrir o projeto: {error}"))
 }
 
+#[tauri::command]
+fn media_file_info(paths: Vec<String>) -> Vec<MediaFileInfo> {
+    paths.iter().map(|path| {
+        match fs::metadata(Path::new(path)) {
+            Ok(metadata) if metadata.is_file() => MediaFileInfo { exists: true, size: metadata.len() },
+            _ => MediaFileInfo { exists: false, size: 0 },
+        }
+    }).collect()
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![app_version, save_project_file, read_project_file])
+        .invoke_handler(tauri::generate_handler![app_version, save_project_file, read_project_file, media_file_info])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar Social Video Editor");
 }
