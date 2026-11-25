@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AudioLines, Clapperboard, Film, FolderOpen, FolderPlus, Image as ImageIcon,
@@ -31,7 +31,7 @@ export default function App() {
   const [ratio, setRatio] = useState("9:16");
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
-  const [playing, setPlaying] = useState(false);
+
 
   useState(() => {
     invoke<string>("app_version").then(setAppVersion).catch(() => undefined);
@@ -148,7 +148,7 @@ export default function App() {
           <div className="asset-list">
             {media.length === 0 ? <div className="empty-library"><FolderPlus size={25} /><strong>Sua biblioteca está vazia</strong><span>Importe arquivos para começar a montar seu vídeo.</span></div> :
               media.map((item) => <div key={item.id} className={`asset-row ${selectedId === item.id ? "selected" : ""}`}>
-                <button className="asset-main" onClick={() => { setSelectedId(item.id); setPlaying(false); }}>
+                <button className="asset-main" onClick={() => { setSelectedId(item.id); }}>
                   <div className="asset-thumb">
                     {item.kind === "image" ? <img src={item.url} /> : item.kind === "video" ? <Video size={18} /> : <AudioLines size={18} />}
                   </div>
