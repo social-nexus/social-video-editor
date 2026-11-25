@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
+import { save } from "@tauri-apps/plugin-dialog";
 import {
   AudioLines, Clapperboard, Film, FolderOpen, FolderPlus, Image as ImageIcon,
   Import, Layers3, Music2, Plus, Save, Scissors, Settings2, Sparkles,
@@ -75,20 +76,35 @@ export default function App() {
     setNotice("Arquivo removido da biblioteca e da timeline.");
   }
 
-  function saveProject() {
+  async function saveProject() {
     const snapshot = {
       format: "sveproj", schemaVersion: 1, projectName, ratio,
       media: media.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
       clips, note: "Este protótipo salva a estrutura e as referências por nome. Os arquivos de mídia precisam ser importados novamente ao abrir em outra sessão.",
     };
-    const blob = new Blob([JSON.stringify(snapshot, null, 2)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = `${projectName.replace(/[^a-z0-9-_]/gi, "_")}.sveproj`;
-    anchor.click();
-    URL.revokeObjectURL(url);
-    setNotice("Snapshot do projeto exportado. Os arquivos originais não foram copiados nem modificados.");
+
+    try {
+      const suggestedName = `${projectName.replace(/[^a-z0-9-_]/gi, "_") || "projeto"}.sveproj`;
+      const path = await save({
+        title: "Salvar projeto",
+        defaultPath: suggestedName,
+        filters: [{ name: "Projeto Social Video Editor", extensions: ["sveproj"] }],
+      });
+
+      if (!path) {
+        setNotice("Salvamento cancelado.");
+        return;
+      }
+
+      const projectPath = path.toLowerCase().endsWith(".sveproj") ? path : `${path}.sveproj`;
+      await invoke("save_project_file", {
+        path: projectPath,
+        contents: JSON.stringify(snapshot, null, 2),
+      });
+      setNotice(`Projeto salvo com sucesso em: ${projectPath}`);
+    } catch (error) {
+      setNotice(`Não foi possível salvar o projeto: ${String(error)}`);
+    }
   }
 
   function loadProject(file?: File) {
