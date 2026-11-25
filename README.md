@@ -4,7 +4,7 @@ Editor de vídeo desktop, local e multiplataforma da Social Nexus.
 
 ## Status
 
-**Fase atual: fundação e especificação.** Este repositório está sendo iniciado com arquitetura e documentação próprias. Ainda não é uma versão executável do editor.
+**Fase atual: protótipo desktop inicial.** A estrutura Tauri + React foi criada e já contém uma interface para importar e pré-visualizar mídias e organizar clipes em uma timeline visual. A execução ainda precisa ser validada em cada sistema operacional.
 
 ## Princípios
 
