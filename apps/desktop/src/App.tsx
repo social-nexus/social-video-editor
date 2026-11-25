@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import {
   AudioLines, Clapperboard, Film, FolderOpen, FolderPlus, Image as ImageIcon,
-  Import, Layers3, Music2, Play, Plus, Save, Scissors, Settings2, Sparkles,
+  Import, Layers3, Music2, Plus, Save, Scissors, Settings2, Sparkles,
   Video, WandSparkles, X, ChevronDown, MonitorPlay
 } from "lucide-react";
 
