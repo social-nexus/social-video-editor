@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import { invoke } from "@tauri-apps/api/core";
+import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   AudioLines, Clapperboard, Film, FolderOpen, FolderPlus, Image as ImageIcon,
@@ -8,7 +8,7 @@ import {
 } from "lucide-react";
 
 type MediaKind = "video" | "image" | "audio" | "other";
-type MediaItem = { id: string; file: File; url: string; name: string; kind: MediaKind; size: number };
+type MediaItem = { id: string; file: File | null; path: string | null; url: string; name: string; kind: MediaKind; size: number };
 type TimelineClip = { id: string; mediaId: string; start: number; duration: number };
 
 const formatSize = (bytes: number) => bytes < 1024 * 1024
@@ -61,7 +61,36 @@ export default function App() {
     setNotice(`${additions.length} arquivo(s) adicionado(s) à biblioteca.`);
   }
 
-  function addToTimeline(item: MediaItem) {
+
+  async function importMediaFromDisk() {
+    try {
+      const paths = await open({ multiple: true, title: "Importar mídia", filters: [{ name: "Mídia", extensions: ["mp4","mov","mkv","webm","avi","m4v","jpg","jpeg","png","webp","gif","bmp","mp3","wav","m4a","aac","flac","ogg"] }] });
+      if (!paths || typeof paths === "string") return;
+      const info = await invoke<{ exists: boolean; size: number }[]>("media_file_info", { paths });
+      const additions = paths.map((mediaPath, index) => {
+        const name = mediaPath.split(/[\\/]/).pop() || mediaPath;
+        const ext = name.split(".").pop()?.toLowerCase() || "";
+        const kind: MediaKind = ["mp4","mov","mkv","webm","avi","m4v"].includes(ext) ? "video" : ["jpg","jpeg","png","webp","gif","bmp"].includes(ext) ? "image" : ["mp3","wav","m4a","aac","flac","ogg"].includes(ext) ? "audio" : "other";
+        return { id: crypto.randomUUID(), file: null, path: mediaPath, url: convertFileSrc(mediaPath), name, kind, size: info[index]?.size ?? 0, missing: !info[index]?.exists };
+      }).filter(item => item.kind !== "other");
+      if (!additions.length) { setNotice("Nenhum arquivo de mídia compatível selecionado."); return; }
+      setMedia(current => [...current, ...additions]);
+      setSelectedId(current => current ?? additions[0].id);
+      setNotice(additions.length + " arquivo(s) importado(s) com caminho vinculado.");
+    } catch (error) { setNotice("Erro ao importar mídia: " + String(error)); }
+  }
+
+  async function relinkMedia(item: MediaItem) {
+    try {
+      const selectedPath = await open({ multiple: false, title: "Localizar arquivo: " + item.name });
+      if (!selectedPath || Array.isArray(selectedPath)) return;
+      const info = await invoke<{ exists: boolean; size: number }[]>("media_file_info", { paths: [selectedPath] });
+      if (!info[0]?.exists) { setNotice("O arquivo selecionado não foi encontrado."); return; }
+      setMedia(current => current.map(entry => entry.id === item.id ? { ...entry, file: null, path: selectedPath, url: convertFileSrc(selectedPath), name: selectedPath.split(/[\\/]/).pop() || entry.name, size: info[0].size, missing: false } : entry));
+      setNotice("Arquivo relinkado com sucesso.");
+    } catch (error) { setNotice("Não foi possível relinkar: " + String(error)); }
+  }
+\n  function addToTimeline(item: MediaItem) {
     const duration = item.kind === "image" ? 5 : 5;
     const start = clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
     setClips((current) => [...current, { id: crypto.randomUUID(), mediaId: item.id, start, duration }]);
@@ -171,9 +200,9 @@ export default function App() {
         <aside className="media-panel panel">
           <div className="panel-heading">
             <div><span className="eyebrow">SEU PROJETO</span><h2>Biblioteca</h2></div>
-            <button className="icon-button small" title="Importar mídia" onClick={() => inputRef.current?.click()}><Plus size={18} /></button>
+            <button className="icon-button small" title="Importar mídia do computador" onClick={importMediaFromDisk}><Plus size={18} /></button>
           </div>
-          <button className="import-drop" onClick={() => inputRef.current?.click()}>
+          <button className="import-drop" onClick={importMediaFromDisk}>
             <div className="upload-icon"><Import size={20} /></div>
             <strong>Importar arquivos</strong>
             <span>Vídeos, imagens e áudios</span>
@@ -192,7 +221,7 @@ export default function App() {
                   </div>
                   <div className="asset-info"><strong title={item.name}>{item.name}</strong><span>{item.kind.toUpperCase()} · {formatSize(item.size)}</span></div>
                 </button>
-                <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>
+                <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>{(item as any).missing && <button className="asset-add" title="Relinkar arquivo" onClick={() => relinkMedia(item)}><FolderOpen size={14} /></button>}
                 <button className="asset-remove" title="Remover" onClick={() => removeMedia(item)}><X size={14} /></button>
               </div>)
             }
