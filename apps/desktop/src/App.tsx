@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { save } from "@tauri-apps/plugin-dialog";
+import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   AudioLines, Clapperboard, Film, FolderOpen, FolderPlus, Image as ImageIcon,
   Import, Layers3, Music2, Plus, Save, Scissors, Settings2, Sparkles,
@@ -24,11 +24,11 @@ function kindOf(file: File): MediaKind {
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
-  const projectRef = useRef<HTMLInputElement>(null);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [clips, setClips] = useState<TimelineClip[]>([]);
   const [projectName, setProjectName] = useState("Projeto sem título");
+  const [projectPath, setProjectPath] = useState<string | null>(null);
   const [ratio, setRatio] = useState("9:16");
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
@@ -76,53 +76,76 @@ export default function App() {
     setNotice("Arquivo removido da biblioteca e da timeline.");
   }
 
-  async function saveProject() {
-    const snapshot = {
+  function createProjectSnapshot() {
+    return {
       format: "sveproj", schemaVersion: 1, projectName, ratio,
       media: media.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
       clips, note: "Este protótipo salva a estrutura e as referências por nome. Os arquivos de mídia precisam ser importados novamente ao abrir em outra sessão.",
     };
+  }
 
+  async function writeProject(path: string) {
+    const projectFilePath = path.toLowerCase().endsWith(".sveproj") ? path : `${path}.sveproj`;
+    await invoke("save_project_file", {
+      path: projectFilePath,
+      contents: JSON.stringify(createProjectSnapshot(), null, 2),
+    });
+    setProjectPath(projectFilePath);
+    setNotice(`Projeto salvo com sucesso em: ${projectFilePath}`);
+  }
+
+  async function saveProjectAs() {
     try {
       const suggestedName = `${projectName.replace(/[^a-z0-9-_]/gi, "_") || "projeto"}.sveproj`;
       const path = await save({
-        title: "Salvar projeto",
-        defaultPath: suggestedName,
+        title: "Salvar projeto como",
+        defaultPath: projectPath ?? suggestedName,
         filters: [{ name: "Projeto Social Video Editor", extensions: ["sveproj"] }],
       });
-
       if (!path) {
         setNotice("Salvamento cancelado.");
         return;
       }
-
-      const projectPath = path.toLowerCase().endsWith(".sveproj") ? path : `${path}.sveproj`;
-      await invoke("save_project_file", {
-        path: projectPath,
-        contents: JSON.stringify(snapshot, null, 2),
-      });
-      setNotice(`Projeto salvo com sucesso em: ${projectPath}`);
+      await writeProject(path);
     } catch (error) {
       setNotice(`Não foi possível salvar o projeto: ${String(error)}`);
     }
   }
 
-  function loadProject(file?: File) {
-    if (!file) return;
-    const reader = new FileReader();
-    reader.onload = () => {
-      try {
-        const data = JSON.parse(String(reader.result));
-        if (data.format !== "sveproj" || data.schemaVersion !== 1) throw new Error("Formato ou versão não reconhecida.");
-        setProjectName(typeof data.projectName === "string" ? data.projectName : "Projeto importado");
-        setRatio(typeof data.ratio === "string" ? data.ratio : "9:16");
-        setClips(Array.isArray(data.clips) ? data.clips : []);
-        setNotice("Estrutura do projeto carregada. Reimporte os arquivos de mídia para reconstruir a biblioteca.");
-      } catch {
-        setNotice("Não foi possível abrir esse arquivo de projeto.");
+  async function saveProject() {
+    if (!projectPath) {
+      await saveProjectAs();
+      return;
+    }
+    try {
+      await writeProject(projectPath);
+    } catch (error) {
+      setNotice(`Não foi possível salvar o projeto: ${String(error)}`);
+    }
+  }
+
+  async function openProject() {
+    try {
+      const path = await open({
+        multiple: false,
+        title: "Abrir projeto",
+        filters: [{ name: "Projeto Social Video Editor", extensions: ["sveproj"] }],
+      });
+      if (!path || Array.isArray(path)) return;
+
+      const contents = await invoke<string>("read_project_file", { path });
+      const data = JSON.parse(contents);
+      if (data.format !== "sveproj" || data.schemaVersion !== 1) {
+        throw new Error("Formato ou versão não reconhecida.");
       }
-    };
-    reader.readAsText(file);
+      setProjectName(typeof data.projectName === "string" ? data.projectName : "Projeto importado");
+      setRatio(typeof data.ratio === "string" ? data.ratio : "9:16");
+      setClips(Array.isArray(data.clips) ? data.clips : []);
+      setProjectPath(path);
+      setNotice("Projeto aberto. Reimporte os arquivos de mídia para reconstruir a biblioteca.");
+    } catch (error) {
+      setNotice(`Não foi possível abrir o projeto: ${String(error)}`);
+    }
   }
 
   return (
@@ -137,10 +160,10 @@ export default function App() {
           <span className="saved-dot" title="Projeto local"></span>
         </div>
         <div className="top-actions">
-          <button className="button secondary" onClick={() => projectRef.current?.click()}><FolderOpen size={16} /> Abrir</button>
-          <button className="button primary" onClick={saveProject}><Save size={16} /> Salvar projeto</button>
+          <button className="button secondary" onClick={openProject}><FolderOpen size={16} /> Abrir</button>
+          <button className="button primary" onClick={saveProject}><Save size={16} /> Salvar</button>
+          <button className="button secondary" onClick={saveProjectAs}>Salvar como</button>
           <button className="icon-button" title="Configurações" onClick={() => setNotice("As configurações serão implementadas nas próximas etapas.")}><Settings2 size={18} /></button>
-          <input ref={projectRef} hidden type="file" accept=".sveproj,.json,application/json" onChange={(event) => loadProject(event.target.files?.[0])} />
         </div>
       </header>
 
