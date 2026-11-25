@@ -108,8 +108,8 @@ export default function App() {
   function createProjectSnapshot() {
     return {
       format: "sveproj", schemaVersion: 1, projectName, ratio,
-      media: media.map(({ id, name, kind, size }) => ({ id, name, kind, size })),
-      clips, note: "Este protótipo salva a estrutura e as referências por nome. Os arquivos de mídia precisam ser importados novamente ao abrir em outra sessão.",
+      media: media.map(({ id, name, kind, size, path }) => ({ id, name, kind, size, path })),
+      clips, note: "Projeto com caminhos absolutos para mídia. Se arquivos forem movidos, use Relinkar na biblioteca.",
     };
   }
 
@@ -169,9 +169,22 @@ export default function App() {
       }
       setProjectName(typeof data.projectName === "string" ? data.projectName : "Projeto importado");
       setRatio(typeof data.ratio === "string" ? data.ratio : "9:16");
+      const savedMedia = Array.isArray(data.media) ? data.media : [];
+      const mediaPaths = savedMedia.map((item: any) => typeof item.path === "string" ? item.path : "");
+      const fileInfos = await invoke<{ exists: boolean; size: number }[]>("media_file_info", { paths: mediaPaths });
+      const restoredMedia = savedMedia.map((item: any, index: number) => {
+        const mediaPath = mediaPaths[index];
+        const exists = Boolean(mediaPath && fileInfos[index]?.exists);
+        return { id: String(item.id || crypto.randomUUID()), file: null, path: mediaPath || null,
+          url: exists ? convertFileSrc(mediaPath) : "", name: String(item.name || "Mídia"),
+          kind: item.kind as MediaKind, size: fileInfos[index]?.size ?? Number(item.size ?? 0), missing: !exists };
+      }).filter((item: MediaItem) => item.kind !== "other");
+      setMedia(restoredMedia);
+      setSelectedId(restoredMedia.find((item: any) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
       setClips(Array.isArray(data.clips) ? data.clips : []);
       setProjectPath(path);
-      setNotice("Projeto aberto. Reimporte os arquivos de mídia para reconstruir a biblioteca.");
+      const missingCount = restoredMedia.filter((item: any) => item.missing).length;
+      setNotice(missingCount ? `Projeto aberto, ${missingCount} mídia(s) ausente(s). Use Relinkar.` : "Projeto aberto com biblioteca e timeline restauradas.");
     } catch (error) {
       setNotice(`Não foi possível abrir o projeto: ${String(error)}`);
     }
