@@ -24,6 +24,9 @@ function kindOf(file: File): MediaKind {
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
+  const previewVideoRef = useRef<HTMLVideoElement>(null);
+  const [previewTime, setPreviewTime] = useState(0);
+  const [previewDuration, setPreviewDuration] = useState(0);
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [clips, setClips] = useState<TimelineClip[]>([]);
@@ -89,6 +92,28 @@ export default function App() {
       setMedia(current => current.map(entry => entry.id === item.id ? { ...entry, file: null, path: selectedPath, url: convertFileSrc(selectedPath), name: selectedPath.split(/[\\/]/).pop() || entry.name, size: info[0].size, missing: false } : entry));
       setNotice("Arquivo relinkado com sucesso.");
     } catch (error) { setNotice("Não foi possível relinkar: " + String(error)); }
+  }
+
+  function selectTimelineClip(clip: TimelineClip) {
+    const item = media.find((entry) => entry.id === clip.mediaId);
+    if (!item) return;
+    setSelectedId(item.id);
+    setPreviewTime(0);
+    setNotice(`Preview sincronizado com o clipe: ${item.name}`);
+  }
+
+  function togglePreviewPlayback() {
+    const video = previewVideoRef.current;
+    if (!video) { setNotice("Selecione um vídeo para usar os controles de reprodução."); return; }
+    if (video.paused) video.play().catch((error) => setNotice("Não foi possível reproduzir: " + String(error)));
+    else video.pause();
+  }
+
+  function seekPreview(value: number) {
+    const video = previewVideoRef.current;
+    if (!video) return;
+    video.currentTime = value;
+    setPreviewTime(value);
   }
 
   function addToTimeline(item: MediaItem) {
@@ -253,11 +278,11 @@ export default function App() {
               <div className={`preview-canvas ratio-${ratio.replace(":", "-")}`}>
                 {!selected ? <div className="preview-empty"><div className="preview-logo"><MonitorPlay size={31} /></div><strong>Seu vídeo começa aqui</strong><span>Selecione um arquivo na biblioteca para visualizar.</span></div> :
                   selected.kind === "image" ? <img className="preview-media" src={selected.url} /> :
-                  selected.kind === "video" ? <video key={selected.id} className="preview-media" src={selected.url} controls /> :
+                  selected.kind === "video" ? <video key={selected.id} ref={previewVideoRef} className="preview-media" src={selected.url} controls onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onLoadedMetadata={(event) => setPreviewDuration(event.currentTarget.duration || 0)} onDurationChange={(event) => setPreviewDuration(event.currentTarget.duration || 0)} /> :
                   <div className="audio-preview"><AudioLines size={44} /><strong>{selected.name}</strong><audio src={selected.url} controls /></div>}
               </div>
             </div>
-            <div className="preview-bottom"><span>{selected ? selected.name : "Nenhuma mídia selecionada"}</span><span>Proporção <b>{ratio}</b></span></div>
+            <div className="preview-transport"><button className="button secondary compact" onClick={togglePreviewPlayback} disabled={selected?.kind !== "video"}>{previewVideoRef.current?.paused ? "▶ Reproduzir" : "⏸ Pausar"}</button><span className="preview-time">{previewTime.toFixed(1)}s / {previewDuration.toFixed(1)}s</span><input aria-label="Posição do vídeo" type="range" min={0} max={Math.max(0, previewDuration)} step={0.1} value={Math.min(previewTime, previewDuration)} onChange={(event) => seekPreview(Number(event.target.value))} disabled={selected?.kind !== "video" || !previewDuration} /></div>\n            <div className="preview-bottom"><span>{selected ? selected.name : "Nenhuma mídia selecionada"}</span><span>Proporção <b>{ratio}</b></span></div>
           </div>
 
           <div className="timeline-panel panel">
@@ -275,13 +300,13 @@ export default function App() {
               <div className="track-row"><div className="track-label"><Video size={14} /> V1</div><div className="track-lane" style={{ width: timelineWidth }}>
                 {clips.filter((clip) => media.find((item) => item.id === clip.mediaId)?.kind !== "audio").map((clip) => {
                   const item = media.find((entry) => entry.id === clip.mediaId);
-                  return <div key={clip.id} className="timeline-clip video-clip" style={{ left: clip.start * 42, width: Math.max(70, clip.duration * 42) }} title={item?.name}><Film size={13} /><span>{item?.name ?? "Mídia não vinculada"}</span><button onClick={() => setClips((current) => current.filter((entry) => entry.id !== clip.id))}><X size={12} /></button></div>;
+                  return <div key={clip.id} className="timeline-clip video-clip" onClick={() => selectTimelineClip(clip)} style={{ left: clip.start * 42, width: Math.max(70, clip.duration * 42), cursor: "pointer" }} title={item?.name}><Film size={13} /><span>{item?.name ?? "Mídia não vinculada"}</span><button onClick={() => setClips((current) => current.filter((entry) => entry.id !== clip.id))}><X size={12} /></button></div>;
                 })}
               </div></div>
               <div className="track-row"><div className="track-label"><Music2 size={14} /> A1</div><div className="track-lane audio-lane" style={{ width: timelineWidth }}>
                 {clips.filter((clip) => media.find((item) => item.id === clip.mediaId)?.kind === "audio").map((clip) => {
                   const item = media.find((entry) => entry.id === clip.mediaId);
-                  return <div key={clip.id} className="timeline-clip audio-clip" style={{ left: clip.start * 42, width: Math.max(70, clip.duration * 42) }} title={item?.name}><AudioLines size={13} /><span>{item?.name ?? "Áudio"}</span><button onClick={() => setClips((current) => current.filter((entry) => entry.id !== clip.id))}><X size={12} /></button></div>;
+                  return <div key={clip.id} className="timeline-clip audio-clip" onClick={() => selectTimelineClip(clip)} style={{ left: clip.start * 42, width: Math.max(70, clip.duration * 42), cursor: "pointer" }} title={item?.name}><AudioLines size={13} /><span>{item?.name ?? "Áudio"}</span><button onClick={() => setClips((current) => current.filter((entry) => entry.id !== clip.id))}><X size={12} /></button></div>;
                 })}
               </div></div>
               {clips.length === 0 && <div className="timeline-empty"><Scissors size={16} /> Importe uma mídia e clique em + para adicioná-la à timeline.</div>}
