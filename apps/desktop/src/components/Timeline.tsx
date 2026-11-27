@@ -1,6 +1,6 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { AudioLines, ChevronDown, Film, Maximize2, Music2, Plus, Scissors, Video, X, ZoomIn, ZoomOut } from "lucide-react";
+import { AudioLines, ChevronDown, Copy, Film, Maximize2, Music2, Plus, Redo2, Scissors, SquareSplitHorizontal, Undo2, Video, X, ZoomIn, ZoomOut } from "lucide-react";
 import type { ClipGeometry, MediaItem, TimelineClip } from "../types";
 import { formatSeconds, formatTimecode, parseSeconds, roundTime } from "../lib/time";
 import {
@@ -43,6 +43,12 @@ type Props = {
   onRemoveClip: (clipId: string) => void;
   onPlayheadChange: (seconds: number) => void;
   onNotice: (message: string) => void;
+  canUndo: boolean;
+  canRedo: boolean;
+  onUndo: () => void;
+  onRedo: () => void;
+  onSplit: () => void;
+  onDuplicate: () => void;
 };
 
 export default function Timeline(props: Props) {
@@ -261,7 +267,13 @@ export default function Timeline(props: Props) {
       <div className="timeline-toolbar">
         <div><span className="eyebrow">EDIÇÃO</span><h2>Timeline</h2></div>
         <div className="timeline-actions">
-          <span className="timeline-timecode" title="Posição do playhead">{formatTimecode(playhead)}</span>
+          <div className="edit-controls">
+            <button className="icon-button small" title="Desfazer (Ctrl+Z)" onClick={props.onUndo} disabled={!props.canUndo}><Undo2 size={14} /></button>
+            <button className="icon-button small" title="Refazer (Ctrl+Y)" onClick={props.onRedo} disabled={!props.canRedo}><Redo2 size={14} /></button>
+            <button className="icon-button small" title="Dividir no playhead (S)" onClick={props.onSplit} disabled={!clips.length}><SquareSplitHorizontal size={14} /></button>
+            <button className="icon-button small" title="Duplicar clipe selecionado (Ctrl+D)" onClick={props.onDuplicate} disabled={!selectedClip}><Copy size={14} /></button>
+          </div>
+          <span className="timeline-timecode" title="Posição do playhead (← → move, Shift = 1s)">{formatTimecode(playhead)}</span>
           <div className="zoom-controls">
             <button className="icon-button small" title="Diminuir zoom (Ctrl + roda do mouse)" onClick={() => zoomTo(pps / 1.25)} disabled={pps <= MIN_PPS}><ZoomOut size={14} /></button>
             <input type="range" aria-label="Zoom da timeline" min={Math.log(MIN_PPS)} max={Math.log(MAX_PPS)} step={0.01} value={Math.log(pps)} onChange={(event) => zoomTo(Math.exp(Number(event.target.value)))} />
@@ -311,7 +323,7 @@ export default function Timeline(props: Props) {
 
       <div className="timeline-footer">
         <span>{clips.length} clipe(s) · duração {formatTimecode(totalDuration)}</span>
-        <span>{dragInfo ?? "Arraste para mover · bordas para aparar · Alt desliga o encaixe · Esc cancela"}</span>
+        <span>{dragInfo ?? "Arraste para mover · bordas aparam · S divide · Del remove · Ctrl+Z desfaz · Alt+←/→ move o clipe"}</span>
       </div>
     </div>
   );

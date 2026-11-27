@@ -20,3 +20,5 @@
 .timeline-timecode{font:600 11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#fdba74;background:#1b1b23;border:1px solid #30303a;border-radius:6px;padding:6px 8px;min-width:74px;text-align:center}
 .zoom-controls{display:flex;align-items:center;gap:4px}.zoom-controls input{width:80px;accent-color:var(--pink)}.icon-button:disabled{opacity:.35;cursor:not-allowed}
 .timeline-ruler{overflow:hidden}
+.edit-controls{display:flex;align-items:center;gap:4px;padding-right:6px;border-right:1px solid #292932}
+.timeline-toolbar{height:auto;min-height:58px;flex-wrap:wrap;gap:6px}.timeline-actions{flex-wrap:wrap;justify-content:flex-end;row-gap:6px}

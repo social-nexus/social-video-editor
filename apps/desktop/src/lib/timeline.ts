@@ -83,6 +83,28 @@ export function applyClipDrag(mode: DragMode, original: ClipGeometry, delta: num
   return { start: roundTime(start), duration: roundTime(end - start), inPoint: roundTime(inPoint) };
 }
 
+/**
+ * Divide um clipe no instante `at` (segundos da timeline).
+ * A segunda parte continua a mídia de onde a primeira parou (ponto de entrada avançado).
+ * Retorna null se `at` estiver fora do clipe ou perto demais de uma borda.
+ */
+export function splitClip(clip: TimelineClip, at: number, newId: string, hasSource: boolean): [TimelineClip, TimelineClip] | null {
+  const cut = roundTime(at);
+  if (cut < clip.start + MIN_CLIP_DURATION || cut > clipEnd(clip) - MIN_CLIP_DURATION) return null;
+  const firstDuration = roundTime(cut - clip.start);
+  const first: TimelineClip = { ...clip, duration: firstDuration };
+  const second: TimelineClip = {
+    ...clip, id: newId, start: cut, duration: roundTime(clipEnd(clip) - cut),
+    inPoint: hasSource ? roundTime(clip.inPoint + firstDuration) : 0,
+  };
+  return [first, second];
+}
+
+/** Fim da última trilha que contém clipes do mesmo tipo (vídeo/imagem ou áudio). */
+export function laneEnd(clips: TimelineClip[], inSameLane: (clip: TimelineClip) => boolean) {
+  return clips.filter(inSameLane).reduce((max, clip) => Math.max(max, clipEnd(clip)), 0);
+}
+
 /** Passo entre as marcas da régua para que fiquem a pelo menos `minPx` pixels uma da outra. */
 const RULER_STEPS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 export function rulerStep(pxPerSecond: number, minPx = 56) {

@@ -9,7 +9,8 @@ import {
 import type { ClipGeometry, MediaItem, MediaKind, TimelineClip } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
-import { clipEnd, sourceDurationOf } from "./lib/timeline";
+import { clipEnd, laneEnd, sourceDurationOf, splitClip } from "./lib/timeline";
+import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline from "./components/Timeline";
 
 type FileInfo = { exists: boolean; size: number };
@@ -30,6 +31,15 @@ export default function App() {
   const [ratio, setRatio] = useState("9:16");
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
+
+  // Histórico de edições da timeline. Os refs guardam o valor mais recente para que
+  // várias edições no mesmo ciclo (e os atalhos de teclado) não usem estado antigo.
+  const [history, setHistory] = useState<History<TimelineClip[]>>(emptyHistory);
+  const clipsRef = useRef(clips);
+  clipsRef.current = clips;
+  const historyRef = useRef(history);
+  historyRef.current = history;
+  const clipboardRef = useRef<TimelineClip | null>(null);
 
   useEffect(() => {
     invoke<string>("app_version").then(setAppVersion).catch(() => undefined);
@@ -103,7 +113,11 @@ export default function App() {
     if (item.url.startsWith("blob:")) URL.revokeObjectURL(item.url);
     const selectedClip = clips.find((clip) => clip.id === selectedClipId);
     setMedia((current) => current.filter((entry) => entry.id !== item.id));
-    setClips((current) => current.filter((clip) => clip.mediaId !== item.id));
+    // Tira os clipes dessa mídia da timeline e também do histórico (não há como desfazer para uma mídia removida).
+    const withoutMedia = (list: TimelineClip[]) => list.filter((clip) => clip.mediaId !== item.id);
+    setClipsNow(withoutMedia(clipsRef.current));
+    applyHistory(mapHistory(historyRef.current, withoutMedia));
+    if (clipboardRef.current?.mediaId === item.id) clipboardRef.current = null;
     if (selectedId === item.id) setSelectedId(null);
     if (selectedClip?.mediaId === item.id) setSelectedClipId(null);
     setNotice("Arquivo removido da biblioteca e da timeline.");
@@ -138,14 +152,49 @@ export default function App() {
     setNotice(`Preview sincronizado com o clipe: ${item.name}`);
   }
 
+  function setClipsNow(next: TimelineClip[]) {
+    clipsRef.current = next;
+    setClips(next);
+  }
+
+  function applyHistory(next: History<TimelineClip[]>) {
+    historyRef.current = next;
+    setHistory(next);
+  }
+
+  /** Toda edição da timeline passa por aqui para poder ser desfeita. */
+  function editClips(updater: (current: TimelineClip[]) => TimelineClip[]) {
+    const current = clipsRef.current;
+    const next = updater(current);
+    if (next === current) return;
+    applyHistory(record(historyRef.current, current));
+    setClipsNow(next);
+  }
+
+  function undoEdit() {
+    const result = undo(historyRef.current, clipsRef.current);
+    if (!result) { setNotice("Nada para desfazer."); return; }
+    applyHistory(result.history);
+    setClipsNow(result.present);
+    setNotice("Edição desfeita.");
+  }
+
+  function redoEdit() {
+    const result = redo(historyRef.current, clipsRef.current);
+    if (!result) { setNotice("Nada para refazer."); return; }
+    applyHistory(result.history);
+    setClipsNow(result.present);
+    setNotice("Edição refeita.");
+  }
+
   function addToTimeline(item: MediaItem) {
     const knownDuration = sourceDurationOf(item);
     const duration = roundTime(knownDuration ?? DEFAULT_IMAGE_DURATION);
     // Cada trilha (V1 / A1) cresce de forma independente.
     const toAudioLane = item.kind === "audio";
-    const start = clips.filter((clip) => isAudioMedia(clip.mediaId) === toAudioLane).reduce((max, clip) => Math.max(max, clipEnd(clip)), 0);
+    const start = laneEnd(clipsRef.current, (clip) => isAudioMedia(clip.mediaId) === toAudioLane);
     const clipId = crypto.randomUUID();
-    setClips((current) => [...current, { id: clipId, mediaId: item.id, start: roundTime(start), duration, inPoint: 0 }]);
+    editClips((current) => [...current, { id: clipId, mediaId: item.id, start: roundTime(start), duration, inPoint: 0 }]);
     setSelectedClipId(clipId);
     setNotice(knownDuration
       ? `“${item.name}” foi colocado na timeline com a duração real: ${formatSeconds(duration)}s.`
@@ -153,13 +202,111 @@ export default function App() {
   }
 
   function updateClip(clipId: string, change: Partial<ClipGeometry>) {
-    setClips((current) => current.map((clip) => clip.id === clipId ? { ...clip, ...change } : clip));
+    editClips((current) => {
+      const target = current.find((clip) => clip.id === clipId);
+      if (!target) return current;
+      const merged = { ...target, ...change };
+      if (merged.start === target.start && merged.duration === target.duration && merged.inPoint === target.inPoint) return current;
+      return current.map((clip) => clip.id === clipId ? merged : clip);
+    });
   }
 
   function removeClip(clipId: string) {
-    setClips((current) => current.filter((entry) => entry.id !== clipId));
+    editClips((current) => current.filter((entry) => entry.id !== clipId));
     if (selectedClipId === clipId) setSelectedClipId(null);
   }
+
+  /** Divide o clipe selecionado no playhead; sem seleção, divide todos os clipes sob o playhead. */
+  function splitAtPlayhead() {
+    const current = clipsRef.current;
+    const selectedClip = current.find((clip) => clip.id === selectedClipId);
+    const candidates = selectedClip ? [selectedClip] : current.filter((clip) => clip.start < playhead && clipEnd(clip) > playhead);
+    const targets = new Set(candidates.map((clip) => clip.id));
+    let splits = 0;
+    const next = current.flatMap((clip) => {
+      if (!targets.has(clip.id)) return [clip];
+      const hasSource = sourceDurationOf(media.find((item) => item.id === clip.mediaId)) !== null;
+      const parts = splitClip(clip, playhead, crypto.randomUUID(), hasSource);
+      if (!parts) return [clip];
+      splits++;
+      return parts;
+    });
+    if (!splits) {
+      setNotice(selectedClip ? "Posicione o playhead dentro do clipe selecionado para dividir." : "Não há clipe sob o playhead para dividir.");
+      return;
+    }
+    editClips(() => next);
+    setNotice(splits === 1 ? "Clipe dividido no playhead." : `${splits} clipes divididos no playhead.`);
+  }
+
+  /** Cria uma cópia do clipe selecionado no fim da trilha dele. */
+  function duplicateSelected() {
+    const clip = clipsRef.current.find((entry) => entry.id === selectedClipId);
+    if (!clip) { setNotice("Selecione um clipe para duplicar."); return; }
+    const audio = isAudioMedia(clip.mediaId);
+    const start = laneEnd(clipsRef.current, (entry) => isAudioMedia(entry.mediaId) === audio);
+    const copy: TimelineClip = { ...clip, id: crypto.randomUUID(), start: roundTime(start) };
+    editClips((current) => [...current, copy]);
+    setSelectedClipId(copy.id);
+    setNotice("Clipe duplicado no fim da trilha.");
+  }
+
+  function copySelected() {
+    const clip = clipsRef.current.find((entry) => entry.id === selectedClipId);
+    if (!clip) { setNotice("Selecione um clipe para copiar."); return; }
+    clipboardRef.current = clip;
+    setNotice("Clipe copiado. Use Ctrl+V para colar no playhead.");
+  }
+
+  function pasteAtPlayhead() {
+    const clip = clipboardRef.current;
+    if (!clip || !media.some((item) => item.id === clip.mediaId)) { setNotice("Nada para colar."); return; }
+    const copy: TimelineClip = { ...clip, id: crypto.randomUUID(), start: roundTime(playhead) };
+    editClips((current) => [...current, copy]);
+    setSelectedClipId(copy.id);
+    setNotice("Clipe colado no playhead.");
+  }
+
+  function nudgeSelected(delta: number) {
+    const clip = clipsRef.current.find((entry) => entry.id === selectedClipId);
+    if (clip) updateClip(clip.id, { start: roundTime(Math.max(0, clip.start + delta)) });
+  }
+
+  // ---- Atalhos de teclado --------------------------------------------------------
+  function handleShortcut(event: KeyboardEvent) {
+    const target = event.target as HTMLElement | null;
+    if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+    const ctrl = event.ctrlKey || event.metaKey;
+    const key = event.key.toLowerCase();
+    const step = event.shiftKey ? 1 : 0.1;
+    if (ctrl && key === "z" && !event.shiftKey) undoEdit();
+    else if (ctrl && (key === "y" || (key === "z" && event.shiftKey))) redoEdit();
+    else if (ctrl && key === "s") void saveProject();
+    else if (ctrl && key === "d") duplicateSelected();
+    else if (ctrl && key === "c") copySelected();
+    else if (ctrl && key === "v") pasteAtPlayhead();
+    else if (ctrl) return;
+    else if (key === "delete" || key === "backspace") { if (selectedClipId) removeClip(selectedClipId); }
+    else if (key === "s") splitAtPlayhead();
+    else if (key === "arrowleft" && event.altKey) nudgeSelected(-step);
+    else if (key === "arrowright" && event.altKey) nudgeSelected(step);
+    else if (key === "arrowleft") setPlayhead((value) => roundTime(Math.max(0, value - step)));
+    else if (key === "arrowright") setPlayhead((value) => roundTime(value + step));
+    else if (key === "home") setPlayhead(0);
+    else if (key === "end") setPlayhead(roundTime(clipsRef.current.reduce((max, clip) => Math.max(max, clipEnd(clip)), 0)));
+    else if (key === "escape") setSelectedClipId(null);
+    else return;
+    event.preventDefault();
+  }
+
+  // Um único listener; ele sempre chama a versão mais recente do handler.
+  const shortcutRef = useRef(handleShortcut);
+  shortcutRef.current = handleShortcut;
+  useEffect(() => {
+    const listener = (event: KeyboardEvent) => shortcutRef.current(event);
+    window.addEventListener("keydown", listener);
+    return () => window.removeEventListener("keydown", listener);
+  }, []);
 
   // ---- Projeto -------------------------------------------------------------------
   function createProjectSnapshot() {
@@ -250,7 +397,9 @@ export default function App() {
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
-      setClips(restoredClips);
+      setClipsNow(restoredClips);
+      applyHistory(emptyHistory());
+      clipboardRef.current = null;
       setSelectedClipId(null);
       setPlayhead(0);
       setProjectPath(path);
@@ -345,6 +494,12 @@ export default function App() {
             onUpdateClip={updateClip}
             onRemoveClip={removeClip}
             onPlayheadChange={setPlayhead}
+            canUndo={history.past.length > 0}
+            canRedo={history.future.length > 0}
+            onUndo={undoEdit}
+            onRedo={redoEdit}
+            onSplit={splitAtPlayhead}
+            onDuplicate={duplicateSelected}
             onNotice={setNotice}
           />
         </section>
