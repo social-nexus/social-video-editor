@@ -46,6 +46,27 @@ export type TimelineClip = {
   /** Fade de entrada / saída do som, em segundos. Ausente = sem fade. */
   fadeIn?: number;
   fadeOut?: number;
+  /** Encaixar (mídia inteira) ou preencher o quadro. Ausente = encaixar. */
+  fit?: ClipFit;
+  /** Movimento de câmera (Ken Burns). Ausente = parado. */
+  motion?: ClipMotion;
+};
+
+export type ClipFit = "contain" | "cover";
+
+export type MotionPreset = "none" | "zoom-in" | "zoom-out" | "pan-right" | "pan-left" | "pan-down" | "pan-up" | "custom";
+
+/** Um quadro do movimento: zoom (1 = sem zoom) e deslocamento do centro em fração do quadro. */
+export type MotionFrame = { scale: number; x: number; y: number };
+
+export type ClipMotion = {
+  preset: MotionPreset;
+  /** Quanto de zoom o preset usa (0,15 = 15%). */
+  intensity: number;
+  /** Curva suave no começo e no fim. */
+  smooth: boolean;
+  from: MotionFrame;
+  to: MotionFrame;
 };
 
 /** Ajustes de som de um clipe. */

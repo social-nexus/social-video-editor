@@ -111,3 +111,12 @@
 .caption-shift .button { padding: 4px 6px; font-size: 9px; }
 .captions-card .button.danger { margin-top: 6px; width: 100%; color: #fca5a5; }
 .captions-hint { margin: 0; font-size: 9px; line-height: 1.5; color: #777783; }
+
+/* Efeitos: enquadramento e Ken Burns */
+.preview-media { transform-origin: center center; will-change: transform; }
+.effects-fields { border: 0; margin: 0; padding: 0; min-width: 0; }
+.effects-fields:disabled { opacity: .5; }
+.segmented.small button { padding: 4px 8px; font-size: 9px; }
+.effects-batch { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2c2b35; }
+.tools-title.small { font-size: 9px; margin-bottom: 4px; }
+.button.full-width { width: 100%; margin-top: 6px; }

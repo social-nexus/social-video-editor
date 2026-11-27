@@ -6,7 +6,7 @@ import {
   Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
-import type { Caption, CaptionStyle, ClipAudio, ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
+import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
 import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
@@ -14,6 +14,8 @@ import { clipEnd, sourceDurationOf, splitClip } from "./lib/timeline";
 import { clampFade, formatPercent } from "./lib/audio";
 import { formatCaptions, newCaptionAt, parseCaptions, shiftCaptions, sortCaptions, type CaptionFormat } from "./lib/captions";
 import CaptionsPanel, { CaptionOverlay } from "./components/CaptionsPanel";
+import EffectsPanel, { type ApplyAllOptions, type EffectsChange } from "./components/EffectsPanel";
+import { makeMotion, MOTION_PRESETS, presetForIndex } from "./lib/effects";
 import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor } from "./lib/tracks";
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline, { type TrackFlag } from "./components/Timeline";
@@ -28,6 +30,16 @@ const timelineEndOf = (state: Pick<TimelineState, "clips" | "captions">) => Math
   state.clips.reduce((max, clip) => Math.max(max, clipEnd(clip)), 0),
   state.captions.reduce((max, caption) => Math.max(max, caption.end), 0),
 );
+/** Movimento salvo no projeto, validado (null se inválido). */
+function validMotion(value: any): ClipMotion | null {
+  const frame = (entry: any) => entry && [entry.scale, entry.x, entry.y].every((n) => typeof n === "number" && Number.isFinite(n)) && entry.scale >= 1 && entry.scale <= 4
+    ? { scale: entry.scale, x: entry.x, y: entry.y } : null;
+  const from = frame(value?.from), to = frame(value?.to);
+  const presets = [...MOTION_PRESETS.map((entry) => entry.id), "custom"];
+  if (!from || !to || !presets.includes(value.preset) || value.preset === "none") return null;
+  const intensity = Number(value.intensity);
+  return { preset: value.preset, intensity: Number.isFinite(intensity) ? intensity : 0.15, smooth: value.smooth !== false, from, to };
+}
 const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 export default function App() {
@@ -72,6 +84,7 @@ export default function App() {
   }, []);
 
   const selected = media.find((item) => item.id === selectedId) ?? null;
+  const selectedClip = timeline.clips.find((clip) => clip.id === selectedClipId) ?? null;
   const timelineEnd = timelineEndOf(timeline);
   const mediaCount = useMemo(() => ({
     video: media.filter((item) => item.kind === "video").length,
@@ -262,11 +275,11 @@ export default function App() {
     setTimelineNow(next);
   }
 
-  function editClips(updater: (current: TimelineClip[]) => TimelineClip[]) {
+  function editClips(updater: (current: TimelineClip[]) => TimelineClip[], mergeKey?: string) {
     editTimeline((state) => {
       const next = updater(state.clips);
       return next === state.clips ? state : { ...state, clips: next };
-    });
+    }, mergeKey);
   }
 
   function undoEdit() {
@@ -350,6 +363,39 @@ export default function App() {
       }) };
     }, `track-volume:${trackId}`);
     setNotice(`Volume da trilha: ${formatPercent(level)}.`);
+  }
+
+  /** Enquadramento e movimento do clipe. Arrastar a intensidade vira um só passo de desfazer. */
+  function updateClipEffects(clipId: string, change: EffectsChange) {
+    editClips((current) => {
+      const target = current.find((clip) => clip.id === clipId);
+      if (!target || isLocked(target.trackId)) return current;
+      const next: TimelineClip = { ...target };
+      if (change.fit !== undefined) { if (change.fit === "contain") delete next.fit; else next.fit = change.fit; }
+      if (change.motion !== undefined) { if (change.motion) next.motion = change.motion; else delete next.motion; }
+      if (JSON.stringify(next) === JSON.stringify(target)) return current;
+      return current.map((clip) => clip.id === clipId ? next : clip);
+    }, change.motion ? `motion:${clipId}:${change.motion.preset}` : undefined);
+  }
+
+  /** Aplica um movimento (ou alterna vários) em todas as imagens de trilhas destravadas, em ordem de tempo. */
+  function applyMotionToAllImages({ choice, intensity, smooth, fit }: ApplyAllOptions) {
+    const images = timelineRef.current.clips
+      .filter((clip) => mediaOf(clip.mediaId)?.kind === "image" && !isLocked(clip.trackId))
+      .sort((a, b) => a.start - b.start);
+    if (!images.length) { setNotice("Não há imagens destravadas na timeline."); return; }
+    const order = new Map(images.map((clip, index) => [clip.id, index]));
+    editClips((current) => current.map((clip) => {
+      const index = order.get(clip.id);
+      if (index === undefined) return clip;
+      const next: TimelineClip = { ...clip };
+      const motion = makeMotion(presetForIndex(choice, index), intensity, smooth);
+      if (motion) next.motion = motion; else delete next.motion;
+      if (fit === "cover") next.fit = "cover";
+      return next;
+    }));
+    const label = choice === "alternate" ? "movimentos alternados" : MOTION_PRESETS.find((entry) => entry.id === choice)?.label.toLowerCase();
+    setNotice(`${images.length} imagem(ns) com ${label}. Ctrl+Z desfaz.`);
   }
 
   /** Coloca um clipe em [start, fim) de uma trilha, sobrescrevendo o que estiver embaixo. */
@@ -738,7 +784,9 @@ export default function App() {
           ...(Number.isFinite(speed) && speed > 0 && speed !== 1 ? { speed } : {}),
           ...(Number.isFinite(volume) && volume >= 0 && volume < 1 ? { volume } : {}),
           ...(Number.isFinite(fadeIn) && fadeIn > 0 ? { fadeIn } : {}),
-          ...(Number.isFinite(fadeOut) && fadeOut > 0 ? { fadeOut } : {}) }];
+          ...(Number.isFinite(fadeOut) && fadeOut > 0 ? { fadeOut } : {}),
+          ...(clip.fit === "cover" ? { fit: "cover" as const } : {}),
+          ...(validMotion(clip.motion) ? { motion: validMotion(clip.motion)! } : {}) }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
@@ -917,6 +965,9 @@ export default function App() {
             <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
             <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
           </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}
+          {selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" && <EffectsPanel clip={selectedClip} locked={isLocked(selectedClip.trackId)}
+            imageClipCount={clips.filter((clip) => mediaOf(clip.mediaId)?.kind === "image").length}
+            onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} />}
           <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
             onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />
           <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {

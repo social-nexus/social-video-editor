@@ -1,6 +1,7 @@
 import type { MediaKind, TimelineClip, Track, TrackKind } from "../types";
 import { MIN_CLIP_DURATION, roundTime } from "./time";
 import { clipEnd, clipSpeed } from "./timeline";
+import { sliceMotion } from "./effects";
 
 export const trackKindFor = (kind: MediaKind): TrackKind => kind === "audio" ? "audio" : "video";
 
@@ -58,12 +59,14 @@ export function overwriteRange(
     // Parte que sobra à esquerda do intervalo.
     const { fadeIn: _in, ...withoutFadeIn } = clip;
     const { fadeOut: _out, ...withoutFadeOut } = clip;
-    if (clipStart < start) keep({ ...withoutFadeOut, duration: roundTime(start - clipStart) });
+    const part = (p0: number, p1: number) => clip.motion ? { motion: sliceMotion(clip.motion, p0, p1) } : {};
+    if (clipStart < start) keep({ ...withoutFadeOut, duration: roundTime(start - clipStart), ...part(0, (start - clipStart) / clip.duration) });
     // Parte que sobra à direita do intervalo.
     if (clipStop > end) {
       const cut = end - clipStart;
       keep({
         ...withoutFadeIn,
+        ...part((end - clipStart) / clip.duration, 1),
         id: clipStart < start ? newId() : clip.id,
         start: roundTime(end),
         duration: roundTime(clipStop - end),

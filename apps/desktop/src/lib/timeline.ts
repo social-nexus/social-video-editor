@@ -1,5 +1,6 @@
 import type { ClipGeometry, MediaItem, TimelineClip } from "../types";
 import { MIN_CLIP_DURATION, roundTime } from "./time";
+import { sliceMotion } from "./effects";
 
 /** Velocidade do clipe (1 quando não definida). */
 export const clipSpeed = (clip: { speed?: number }) => clip.speed && clip.speed > 0 ? clip.speed : 1;
@@ -104,9 +105,10 @@ export function splitClip(clip: TimelineClip, at: number, newId: string, hasSour
   const firstDuration = roundTime(cut - clip.start);
   const { fadeOut: _out, ...withoutFadeOut } = clip;
   const { fadeIn: _in, ...withoutFadeIn } = clip;
-  const first: TimelineClip = { ...withoutFadeOut, duration: firstDuration };
+  const ratio = firstDuration / clip.duration;
+  const first: TimelineClip = { ...withoutFadeOut, duration: firstDuration, ...(clip.motion ? { motion: sliceMotion(clip.motion, 0, ratio) } : {}) };
   const second: TimelineClip = {
-    ...withoutFadeIn, id: newId, start: cut, duration: roundTime(clipEnd(clip) - cut),
+    ...withoutFadeIn, id: newId, ...(clip.motion ? { motion: sliceMotion(clip.motion, ratio, 1) } : {}), start: cut, duration: roundTime(clipEnd(clip) - cut),
     inPoint: hasSource ? roundTime(clip.inPoint + firstDuration * clipSpeed(clip)) : 0,
   };
   return [first, second];
