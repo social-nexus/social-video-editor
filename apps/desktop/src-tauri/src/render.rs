@@ -241,3 +241,52 @@ pub fn cancel_render(state: State<RenderState>) {
         let _ = child.kill();
     }
 }
+
+fn base64(bytes: &[u8]) -> String {
+    const TABLE: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((bytes.len() + 2) / 3 * 4);
+    for chunk in bytes.chunks(3) {
+        let n = (chunk[0] as u32) << 16 | (*chunk.get(1).unwrap_or(&0) as u32) << 8 | *chunk.get(2).unwrap_or(&0) as u32;
+        for i in 0..4 {
+            if i <= chunk.len() { out.push(TABLE[(n >> (18 - 6 * i) & 63) as usize] as char); } else { out.push('='); }
+        }
+    }
+    out
+}
+
+/// Miniatura de um projeto: um quadro da mídia (até 320 px), em JPEG como data URL.
+/// Só lê a mídia; nada é gravado em disco.
+#[tauri::command(async)]
+pub fn media_thumbnail(ffmpeg: Option<String>, path: String, seconds: f64) -> Result<String, String> {
+    if !Path::new(&path).is_file() {
+        return Err("Mídia não encontrada.".into());
+    }
+    let program = program_or_default(ffmpeg);
+    let mut cmd = command(&program);
+    cmd.args(["-hide_banner", "-loglevel", "error", "-nostdin"]);
+    if seconds > 0.0 {
+        cmd.args(["-ss", &format!("{seconds:.3}")]);
+    }
+    let output = cmd
+        .args(["-i", &path, "-frames:v", "1", "-vf", "scale=320:320:force_original_aspect_ratio=decrease",
+            "-c:v", "mjpeg", "-q:v", "6", "-f", "image2pipe", "-"])
+        .stderr(Stdio::null())
+        .output()
+        .map_err(|_| "ffmpeg não encontrado.".to_string())?;
+    if !output.status.success() || output.stdout.len() < 100 {
+        return Err("Não foi possível gerar a miniatura.".into());
+    }
+    Ok(format!("data:image/jpeg;base64,{}", base64(&output.stdout)))
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn base64_matches_rfc4648() {
+        assert_eq!(super::base64(b""), "");
+        assert_eq!(super::base64(b"f"), "Zg==");
+        assert_eq!(super::base64(b"fo"), "Zm8=");
+        assert_eq!(super::base64(b"foo"), "Zm9v");
+        assert_eq!(super::base64(b"foobar"), "Zm9vYmFy");
+    }
+}

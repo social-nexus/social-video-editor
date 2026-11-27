@@ -99,7 +99,7 @@ pub fn run() {
         .manage(render::RenderState::default())
         .invoke_handler(tauri::generate_handler![
             app_version, save_project_file, read_project_file, media_file_info, list_media_files, read_text_file, write_text_file, paths_exist,
-            render::ffmpeg_info, render::probe_media, render::start_render, render::cancel_render
+            render::ffmpeg_info, render::probe_media, render::start_render, render::cancel_render, render::media_thumbnail
         ])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar Social Video Editor");

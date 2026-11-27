@@ -27,7 +27,7 @@ import AssemblyDialog from "./components/AssemblyDialog";
 import ExportDialog from "./components/ExportDialog";
 import StartScreen from "./components/StartScreen";
 import UnsavedDialog from "./components/UnsavedDialog";
-import { forgetProject, loadRecent, projectFileName, rememberProject, type RecentProject } from "./lib/recent";
+import { forgetProject, loadRecent, projectFileName, rememberProject, setRecentThumb, thumbnailSource, type RecentProject } from "./lib/recent";
 import type { AssemblyPlan } from "./lib/autoassemble";
 
 type FileInfo = { exists: boolean; size: number };
@@ -701,15 +701,28 @@ export default function App() {
 
   // ---- Atalhos de teclado --------------------------------------------------------
   function handleShortcut(event: KeyboardEvent) {
-    if (assemblyOpen || exportOpen || unsaved || screen !== "editor") return;
-    const target = event.target;
-    if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
+    if (assemblyOpen || exportOpen || unsaved) return;
     const ctrl = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
+    // Atalhos de arquivo: valem também com o cursor num campo de texto.
+    if (ctrl && !event.altKey) {
+      let fileAction: (() => void) | null = null;
+      if (screen === "home") {
+        if (key === "n") fileAction = () => startNewProject();
+        else if (key === "o") fileAction = () => void openFromHome();
+      } else if (key === "s" && event.shiftKey) fileAction = () => void saveProjectAs();
+      else if (key === "s") fileAction = () => void saveProject();
+      else if (key === "o") fileAction = openProject;
+      else if (key === "n") fileAction = () => guardUnsaved("criar um projeto novo", () => resetProject(ratio));
+      else if (key === "e" && clips.length) fileAction = () => setExportOpen(true);
+      if (fileAction) { event.preventDefault(); fileAction(); return; }
+    }
+    if (screen !== "editor") return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
     const step = event.shiftKey ? 1 : 0.1;
     if (ctrl && key === "z" && !event.shiftKey) undoEdit();
     else if (ctrl && (key === "y" || (key === "z" && event.shiftKey))) redoEdit();
-    else if (ctrl && key === "s") void saveProject();
     else if (ctrl && key === "d") duplicateSelected();
     else if (ctrl && key === "c") copySelected();
     else if (ctrl && key === "v") pasteAtPlayhead();
@@ -760,6 +773,7 @@ export default function App() {
     setNotice(`Projeto salvo com sucesso em: ${projectFilePath}`);
     markClean();
     remember(projectFilePath, { name });
+    void refreshThumb(projectFilePath, clips, media);
   }
 
   /** Coloca o projeto atual no topo dos recentes. */
@@ -947,13 +961,31 @@ export default function App() {
       markClean();
       setScreen("editor");
       const projectRatio = typeof data.ratio === "string" ? data.ratio : "9:16";
-      setRecent(rememberProject({ path, name: typeof data.projectName === "string" && !isUntitled(data.projectName) ? data.projectName : projectFileName(path), ratio: projectRatio,
-        openedAt: Date.now(), duration: timelineEndOf({ clips: restoredClips, captions: restoredCaptions }), clips: restoredClips.length }));
+      const recentList = rememberProject({ path, name: typeof data.projectName === "string" && !isUntitled(data.projectName) ? data.projectName : projectFileName(path), ratio: projectRatio,
+        openedAt: Date.now(), duration: timelineEndOf({ clips: restoredClips, captions: restoredCaptions }), clips: restoredClips.length });
+      setRecent(recentList);
+      if (!recentList[0]?.thumb) void refreshThumb(path, restoredClips, restoredMedia);
       return true;
     } catch (error) {
       setNotice(`Não foi possível abrir o projeto: ${String(error)}`);
       return false;
     }
+  }
+
+  async function openFromHome() {
+    const path = await chooseProjectFile();
+    if (path) await openProjectAt(path);
+  }
+
+  /** Miniatura para os recentes: um quadro do primeiro clipe (feito pelo ffmpeg, em segundo plano). */
+  async function refreshThumb(projectFilePath: string, clipList: TimelineClip[], mediaList: MediaItem[]) {
+    if (!inTauri()) return;
+    const source = thumbnailSource(clipList, mediaList);
+    if (!source) return;
+    try {
+      const thumb = await invoke<string>("media_thumbnail", { ffmpeg: localStorage.getItem("sve.ffmpegPath") || null, ...source });
+      setRecent(setRecentThumb(projectFilePath, thumb));
+    } catch { /* sem ffmpeg ou mídia ilegível: fica o ícone */ }
   }
 
   /** Projeto recente que mudou de lugar: escolhe o arquivo novo e troca na lista. */
@@ -988,7 +1020,7 @@ export default function App() {
       onNew={() => startNewProject()}
       onAutoAssembly={() => startNewProject(() => void importFolder())}
       onImportMedia={() => startNewProject(() => void (inTauri() ? importMediaFromDisk() : inputRef.current?.click()))}
-      onOpenDialog={async () => { const path = await chooseProjectFile(); if (path) await openProjectAt(path); }}
+      onOpenDialog={() => void openFromHome()}
       onOpenRecent={(project) => void openProjectAt(project.path)}
       onLocate={(project) => void locateRecent(project)}
       onForget={(project) => setRecent(forgetProject(project.path))} />
@@ -1009,10 +1041,10 @@ export default function App() {
         </div>
         <div className="top-actions">
           <button className="button secondary" onClick={goHome} title="Fechar o projeto e voltar à tela inicial"><Home size={16} /> Início</button>
-          <button className="button secondary" onClick={openProject}><FolderOpen size={16} /> Abrir</button>
-          <button className="button primary" onClick={() => void saveProject()}><Save size={16} /> Salvar</button>
-          <button className="button secondary" onClick={() => void saveProjectAs()}>Salvar como</button>
-          <button className="button primary" disabled={!clips.length} onClick={() => setExportOpen(true)} title="Gerar o vídeo final (MP4)"><Download size={16} /> Exportar</button>
+          <button className="button secondary" onClick={openProject} title="Abrir projeto (Ctrl+O)"><FolderOpen size={16} /> Abrir</button>
+          <button className="button primary" onClick={() => void saveProject()} title="Salvar (Ctrl+S)"><Save size={16} /> Salvar</button>
+          <button className="button secondary" onClick={() => void saveProjectAs()} title="Salvar como (Ctrl+Shift+S)">Salvar como</button>
+          <button className="button primary" disabled={!clips.length} onClick={() => setExportOpen(true)} title="Gerar o vídeo final em MP4 (Ctrl+E)"><Download size={16} /> Exportar</button>
           <button className="icon-button" title="Configurações" onClick={() => setNotice("As configurações serão implementadas nas próximas etapas.")}><Settings2 size={18} /></button>
         </div>
       </header>

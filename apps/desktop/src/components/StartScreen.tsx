@@ -57,7 +57,7 @@ export default function StartScreen({ version, recent, ratio, onRatioChange, onN
       </div>
       <nav>
         <button className="start-nav active"><Plus size={16} /> Criar um projeto</button>
-        <button className="start-nav" onClick={onOpenDialog}><FolderOpen size={16} /> Abrir projeto…</button>
+        <button className="start-nav" onClick={onOpenDialog} title="Ctrl+O"><FolderOpen size={16} /> Abrir projeto…</button>
       </nav>
       <small className="start-version">Social Video Editor v{version} · projeto local</small>
     </aside>
@@ -72,7 +72,7 @@ export default function StartScreen({ version, recent, ratio, onRatioChange, onN
         <small>{RATIOS.find((entry) => entry.id === ratio)?.hint}</small>
       </div>
 
-      <button className="start-new" onClick={onNew}>
+      <button className="start-new" onClick={onNew} title="Ctrl+N">
         <span className="start-new-icon"><Plus size={22} /></span>
         <strong>Novo projeto</strong>
         <small>Timeline vazia em {ratio}</small>
@@ -103,7 +103,7 @@ export default function StartScreen({ version, recent, ratio, onRatioChange, onN
           return <div key={project.path} className={`start-card ${missing ? "missing" : ""}`}>
             <button className="start-card-main" title={project.path} onClick={() => missing ? onLocate(project) : onOpenRecent(project)}>
               <div className={`start-thumb ratio-${project.ratio.replace(":", "-")}`}>
-                {missing ? <AlertTriangle size={22} /> : <Clapperboard size={22} />}
+                {missing ? <AlertTriangle size={22} /> : project.thumb ? <img src={project.thumb} alt="" draggable={false} /> : <Clapperboard size={22} />}
                 <em>{project.ratio}</em>
               </div>
               <strong>{project.name}</strong>

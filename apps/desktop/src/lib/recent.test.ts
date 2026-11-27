@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { forgetProject, formatWhen, loadRecent, MAX_RECENT, projectFileName, RECENT_KEY, rememberProject } from "./recent";
+import { forgetProject, formatWhen, loadRecent, MAX_RECENT, projectFileName, RECENT_KEY, rememberProject, setRecentThumb, thumbnailSource } from "./recent";
 
 function memory() {
   const data = new Map<string, string>();
@@ -40,5 +40,31 @@ describe("projetos recentes", () => {
     expect(formatWhen(now - 15 * 60_000, now)).toBe("há 15 min");
     expect(formatWhen(now - 3 * 3_600_000, now)).toBe("há 3 h");
     expect(formatWhen(now - 30 * 3_600_000, now)).toBe("ontem");
+  });
+  it("miniatura: guarda, troca e sobrevive a reabrir", () => {
+    const storage = memory();
+    rememberProject(entry("D:/a.sveproj"), storage);
+    setRecentThumb("d:\\A.sveproj", "data:image/jpeg;base64,AAA", storage);
+    expect(loadRecent(storage)[0].thumb).toBe("data:image/jpeg;base64,AAA");
+    rememberProject(entry("D:/a.sveproj", 5), storage);
+    expect(loadRecent(storage)[0].thumb).toBe("data:image/jpeg;base64,AAA");
+    setRecentThumb("D:/a.sveproj", "javascript:alert(1)", storage);
+    expect(loadRecent(storage)[0].thumb).toBeUndefined();
+  });
+  it("fonte da miniatura", () => {
+    const media = [
+      { id: "a", path: "D:/som.mp3", kind: "audio" },
+      { id: "v", path: "D:/v.mp4", kind: "video" },
+      { id: "i", path: "D:/i.png", kind: "image" },
+      { id: "x", path: "D:/sumiu.png", kind: "image", missing: true },
+    ];
+    expect(thumbnailSource([
+      { mediaId: "a", start: 0, duration: 9, inPoint: 0 },
+      { mediaId: "x", start: 0, duration: 2, inPoint: 0 },
+      { mediaId: "v", start: 3, duration: 4, inPoint: 2, speed: 2 },
+      { mediaId: "i", start: 7, duration: 2, inPoint: 0 },
+    ], media)).toEqual({ path: "D:/v.mp4", seconds: 4 });
+    expect(thumbnailSource([], media)).toEqual({ path: "D:/v.mp4", seconds: 1 });
+    expect(thumbnailSource([], [media[0]])).toBeNull();
   });
 });
