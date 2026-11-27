@@ -120,3 +120,9 @@
 .effects-batch { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2c2b35; }
 .tools-title.small { font-size: 9px; margin-bottom: 4px; }
 .button.full-width { width: 100%; margin-top: 6px; }
+
+/* Animações de entrada e saída */
+.effects-anim { margin-top: 8px; padding-top: 8px; border-top: 1px solid #2c2b35; display: flex; flex-direction: column; gap: 6px; }
+.timeline-clip .clip-anim { position: absolute; top: 0; height: 3px; pointer-events: none; background: linear-gradient(90deg, #fb923c, #ec4899); opacity: .9; }
+.timeline-clip .clip-anim.in { left: 0; border-bottom-right-radius: 3px; }
+.timeline-clip .clip-anim.out { right: 0; border-bottom-left-radius: 3px; background: linear-gradient(90deg, #ec4899, #fb923c); }

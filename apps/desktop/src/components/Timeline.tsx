@@ -1,4 +1,5 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { effectiveAnimations } from "../lib/animations";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
   AudioLines, ChevronDown, Copy, Eye, EyeOff, Film, Lock, LockOpen, Maximize2, Plus, Redo2, Scissors,
@@ -344,6 +345,13 @@ export default function Timeline(props: Props) {
       {sound && item && <ClipWaveform item={item} inPoint={geometry.inPoint} sourceSpan={geometry.duration * clipSpeed(clip)} width={width} height={30} />}
       {fades.fadeIn > 0 && <div className="clip-fade in" style={{ width: fades.fadeIn * pps }} />}
       {fades.fadeOut > 0 && <div className="clip-fade out" style={{ width: fades.fadeOut * pps }} />}
+      {!audio && (clip.animIn || clip.animOut) && (() => {
+        const anims = effectiveAnimations({ ...clip, duration: geometry.duration });
+        return <>
+          {anims.inDur > 0 && <div className="clip-anim in" title="Animação de entrada" style={{ width: anims.inDur * pps }} />}
+          {anims.outDur > 0 && <div className="clip-anim out" title="Animação de saída" style={{ width: anims.outDur * pps }} />}
+        </>;
+      })()}
       {!locked && <div className="clip-handle start" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-start")} />}
       {!narrow && (audio ? <AudioLines size={13} /> : <Film size={13} />)}
       {!narrow && <span>{item?.name ?? (audio ? "Áudio" : "Mídia não vinculada")}</span>}

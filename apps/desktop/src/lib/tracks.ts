@@ -57,8 +57,8 @@ export function overwriteRange(
     const clipStop = clipEnd(clip);
     if (clip.trackId !== trackId || clipStop <= start + 1e-9 || clipStart >= end - 1e-9) { result.push(clip); continue; }
     // Parte que sobra à esquerda do intervalo.
-    const { fadeIn: _in, ...withoutFadeIn } = clip;
-    const { fadeOut: _out, ...withoutFadeOut } = clip;
+    const { fadeIn: _in, animIn: _aIn, ...withoutFadeIn } = clip;
+    const { fadeOut: _out, animOut: _aOut, ...withoutFadeOut } = clip;
     const part = (p0: number, p1: number) => clip.motion ? { motion: sliceMotion(clip.motion, p0, p1) } : {};
     if (clipStart < start) keep({ ...withoutFadeOut, duration: roundTime(start - clipStart), ...part(0, (start - clipStart) / clip.duration) });
     // Parte que sobra à direita do intervalo.

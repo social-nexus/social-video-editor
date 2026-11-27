@@ -16,6 +16,7 @@ import { formatCaptions, newCaptionAt, parseCaptions, shiftCaptions, sortCaption
 import CaptionsPanel, { CaptionOverlay } from "./components/CaptionsPanel";
 import EffectsPanel, { type ApplyAllOptions, type EffectsChange } from "./components/EffectsPanel";
 import { makeMotion, MOTION_PRESETS, presetForIndex } from "./lib/effects";
+import { validAnimation } from "./lib/animations";
 import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor } from "./lib/tracks";
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline, { type TrackFlag } from "./components/Timeline";
@@ -373,9 +374,31 @@ export default function App() {
       const next: TimelineClip = { ...target };
       if (change.fit !== undefined) { if (change.fit === "contain") delete next.fit; else next.fit = change.fit; }
       if (change.motion !== undefined) { if (change.motion) next.motion = change.motion; else delete next.motion; }
+      for (const which of ["animIn", "animOut"] as const) {
+        const value = change[which];
+        if (value !== undefined) { if (value) next[which] = value; else delete next[which]; }
+      }
       if (JSON.stringify(next) === JSON.stringify(target)) return current;
       return current.map((clip) => clip.id === clipId ? next : clip);
-    }, change.motion ? `motion:${clipId}:${change.motion.preset}` : undefined);
+    }, change.motion ? `motion:${clipId}:${change.motion.preset}`
+      : change.animIn ? `anim-in:${clipId}:${change.animIn.type}`
+      : change.animOut ? `anim-out:${clipId}:${change.animOut.type}` : undefined);
+  }
+
+  /** Copia a entrada e a saída de um clipe para todas as imagens destravadas. */
+  function copyAnimationsToImages(sourceId: string) {
+    const source = timelineRef.current.clips.find((clip) => clip.id === sourceId);
+    if (!source) return;
+    const targets = new Set(timelineRef.current.clips
+      .filter((clip) => clip.id !== sourceId && mediaOf(clip.mediaId)?.kind === "image" && !isLocked(clip.trackId))
+      .map((clip) => clip.id));
+    if (!targets.size) { setNotice("Não há outras imagens destravadas na timeline."); return; }
+    editClips((current) => current.map((clip) => {
+      if (!targets.has(clip.id)) return clip;
+      const { animIn: _in, animOut: _out, ...rest } = clip;
+      return { ...rest, ...(source.animIn ? { animIn: source.animIn } : {}), ...(source.animOut ? { animOut: source.animOut } : {}) };
+    }));
+    setNotice(`Entrada e saída copiadas para ${targets.size} imagem(ns). Ctrl+Z desfaz.`);
   }
 
   /** Aplica um movimento (ou alterna vários) em todas as imagens de trilhas destravadas, em ordem de tempo. */
@@ -786,7 +809,9 @@ export default function App() {
           ...(Number.isFinite(fadeIn) && fadeIn > 0 ? { fadeIn } : {}),
           ...(Number.isFinite(fadeOut) && fadeOut > 0 ? { fadeOut } : {}),
           ...(clip.fit === "cover" ? { fit: "cover" as const } : {}),
-          ...(validMotion(clip.motion) ? { motion: validMotion(clip.motion)! } : {}) }];
+          ...(validMotion(clip.motion) ? { motion: validMotion(clip.motion)! } : {}),
+          ...(validAnimation(clip.animIn) ? { animIn: validAnimation(clip.animIn)! } : {}),
+          ...(validAnimation(clip.animOut) ? { animOut: validAnimation(clip.animOut)! } : {}) }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
@@ -967,7 +992,7 @@ export default function App() {
           </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}
           {selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" && <EffectsPanel clip={selectedClip} locked={isLocked(selectedClip.trackId)}
             imageClipCount={clips.filter((clip) => mediaOf(clip.mediaId)?.kind === "image").length}
-            onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} />}
+            onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} onCopyAnimations={copyAnimationsToImages} />}
           <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
             onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />
           <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {

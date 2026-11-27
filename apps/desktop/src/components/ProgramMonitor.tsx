@@ -6,6 +6,7 @@ import { clipsAt } from "../lib/tracks";
 import { clipSpeed } from "../lib/timeline";
 import { clipGainAt, trackVolume } from "../lib/audio";
 import { clipFrameAt, DEFAULT_FIT, frameTransform } from "../lib/effects";
+import { animationTransform, clipAnimationAt } from "../lib/animations";
 
 /** Tolerância de dessincronia antes de reposicionar a mídia (segundos). */
 const PAUSED_TOLERANCE = 0.04;
@@ -91,9 +92,13 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
   }
   const visualItem = visual ? playable(visual) : null;
   // Enquadramento e movimento (Ken Burns) do clipe visível no instante do playhead.
-  const visualStyle: CSSProperties | undefined = visual
-    ? { objectFit: visual.fit ?? DEFAULT_FIT, transform: frameTransform(clipFrameAt(visual, playhead)) }
-    : undefined;
+  // A animação de entrada/saída fica por fora do Ken Burns (move e escala a imagem já enquadrada).
+  let visualStyle: CSSProperties | undefined;
+  if (visual) {
+    const anim = clipAnimationAt(visual, playhead);
+    const transform = [animationTransform(anim), frameTransform(clipFrameAt(visual, playhead))].filter(Boolean).join(" ");
+    visualStyle = { objectFit: visual.fit ?? DEFAULT_FIT, transform: transform || undefined, ...(anim.opacity < 1 ? { opacity: anim.opacity } : {}) };
+  }
 
   // Fontes de som: vídeos (exceto o visível, que já toca no próprio elemento) e áudios.
   const sounds = active.filter((clip) => {

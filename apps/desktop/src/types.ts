@@ -50,7 +50,14 @@ export type TimelineClip = {
   fit?: ClipFit;
   /** Movimento de câmera (Ken Burns). Ausente = parado. */
   motion?: ClipMotion;
+  /** Animação de entrada / saída da imagem. Ausente = sem animação. */
+  animIn?: ClipAnimation;
+  animOut?: ClipAnimation;
 };
+
+export type AnimationType = "fade" | "zoom-in" | "zoom-out" | "pop" | "slide-left" | "slide-right" | "slide-up" | "slide-down";
+
+export type ClipAnimation = { type: AnimationType; duration: number };
 
 export type ClipFit = "contain" | "cover";
 
