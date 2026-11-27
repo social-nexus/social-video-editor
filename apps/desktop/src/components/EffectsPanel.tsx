@@ -1,10 +1,11 @@
 import { useState } from "react";
+import { cleanPlacement, isIdentity, placementOf } from "../lib/placement";
 import { Move, Sparkles } from "lucide-react";
-import type { AnimationType, ClipAnimation, ClipFit, ClipMotion, MotionPreset, TimelineClip } from "../types";
+import type { AnimationType, ClipAnimation, ClipFit, ClipMotion, MotionPreset, TimelineClip, ClipPlacement } from "../types";
 import { ANIMATION_TYPES, DEFAULT_ANIMATION_DURATION, effectiveAnimations, makeAnimation, MAX_ANIMATION_DURATION, MIN_ANIMATION_DURATION } from "../lib/animations";
 import { DEFAULT_FIT, DEFAULT_INTENSITY, makeMotion, MOTION_PRESETS } from "../lib/effects";
 
-export type EffectsChange = { motion?: ClipMotion | null; fit?: ClipFit; animIn?: ClipAnimation | null; animOut?: ClipAnimation | null };
+export type EffectsChange = { motion?: ClipMotion | null; fit?: ClipFit; animIn?: ClipAnimation | null; animOut?: ClipAnimation | null; placement?: ClipPlacement | null };
 export type ApplyAllOptions = { choice: MotionPreset | "alternate"; intensity: number; smooth: boolean; fit: ClipFit | null };
 
 type Props = {
@@ -62,6 +63,7 @@ export default function EffectsPanel({ clip, locked, imageClipCount, onChange, o
             title="Preenche o quadro todo (corta as sobras)" onClick={() => onChange(clip.id, { fit: "cover" })}>Preencher</button>
         </div>
       </div>
+      <PlacementFields clip={clip} onChange={onChange} />
       <label className="caption-setting"><span>Movimento</span>
         <select value={preset} onChange={(event) => setMotion(event.target.value as MotionPreset)}>
           {MOTION_PRESETS.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
@@ -96,5 +98,30 @@ export default function EffectsPanel({ clip, locked, imageClipCount, onChange, o
         title="Copia a entrada e a saída deste clipe para todas as imagens de trilhas destravadas. Ctrl+Z desfaz.">
         Copiar entrada e saída para todas</button>
     </div>}
+  </div>;
+}
+
+/** Posição, tamanho e rotação em números (o mesmo que arrastar as alças no preview). */
+function PlacementFields({ clip, onChange }: { clip: TimelineClip; onChange: (clipId: string, change: EffectsChange) => void }) {
+  const p = placementOf(clip);
+  const set = (change: Partial<typeof p>) => {
+    const next = cleanPlacement({ ...p, ...change });
+    onChange(clip.id, { placement: isIdentity(next) ? null : next });
+  };
+  const field = (label: string, value: number, apply: (value: number) => void, unit: string, step: number) =>
+    <label className="placement-field"><span>{label}</span>
+      <input type="number" step={step} value={Math.round(value * 10) / 10}
+        onChange={(event) => { const number = Number(event.target.value); if (event.target.value !== "" && Number.isFinite(number)) apply(number); }} />
+      <em>{unit}</em></label>;
+  return <div className="placement-grid">
+    <div className="placement-head"><span>Posição no quadro</span>
+      {!isIdentity(clip.placement) && <button className="link-button" onClick={() => onChange(clip.id, { placement: null })}
+        title="Volta ao centro, tamanho normal e sem rotação">Restaurar</button>}
+    </div>
+    {field("X", p.x * 100, (value) => set({ x: value / 100 }), "%", 1)}
+    {field("Y", p.y * 100, (value) => set({ y: value / 100 }), "%", 1)}
+    {field("Tamanho", p.scale * 100, (value) => set({ scale: value / 100 }), "%", 5)}
+    {field("Rotação", p.rotation, (value) => set({ rotation: value }), "°", 5)}
+    <small>Ou arraste no preview: o meio move, os cantos mudam o tamanho e a bolinha gira (Shift: de 15 em 15°).</small>
   </div>;
 }

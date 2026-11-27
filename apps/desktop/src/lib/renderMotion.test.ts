@@ -56,7 +56,7 @@ describe("movimento na exportação = preview", () => {
   it("filtros: fonte preta, escala por quadro, redução e mistura com preto", () => {
     const expr = clipTransformExpr(base({ animIn: makeAnimation("fade", 0.5), motion: makeMotion("zoom-in")! }))!;
     const chains = motionFilters(expr, "f0", "m0", "0", { width: 1080, height: 1920, fps: 30, length: 4, factor: 2 });
-    expect(chains[0]).toBe("color=c=black:s=2160x3840:r=30:d=4[bg0]");
+    expect(chains[0]).toBe("color=c=black@0:s=2160x3840:r=30:d=4,format=yuva420p[bg0]");
     expect(chains[1]).toContain("[f0]scale=w='max(2,trunc(2160*");
     expect(chains[1]).toContain(":eval=frame");
     expect(chains[2]).toContain("overlay=x='(W-w)/2+W*");

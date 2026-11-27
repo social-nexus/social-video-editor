@@ -7,7 +7,7 @@ import {
   Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
-import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
+import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
 import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
@@ -27,6 +27,7 @@ import AssemblyDialog from "./components/AssemblyDialog";
 import ExportDialog from "./components/ExportDialog";
 import StartScreen from "./components/StartScreen";
 import UnsavedDialog from "./components/UnsavedDialog";
+import { isIdentity, validPlacement } from "./lib/placement";
 import { forgetProject, loadRecent, projectFileName, rememberProject, setRecentThumb, thumbnailSource, type RecentProject } from "./lib/recent";
 import type { AssemblyPlan } from "./lib/autoassemble";
 
@@ -48,6 +49,8 @@ function validMotion(value: any): ClipMotion | null {
   return { preset: value.preset, intensity: Number.isFinite(intensity) ? intensity : 0.15, smooth: value.smooth !== false, from, to };
 }
 const inTauri = () => "__TAURI_INTERNALS__" in window;
+/** "9:16" → 0,5625 (largura / altura). */
+const aspectOf = (ratio: string) => { const [w, h] = ratio.split(":").map(Number); return w > 0 && h > 0 ? w / h : 16 / 9; };
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -412,6 +415,7 @@ export default function App() {
       const next: TimelineClip = { ...target };
       if (change.fit !== undefined) { if (change.fit === "contain") delete next.fit; else next.fit = change.fit; }
       if (change.motion !== undefined) { if (change.motion) next.motion = change.motion; else delete next.motion; }
+      if (change.placement !== undefined) { if (change.placement) next.placement = change.placement; else delete next.placement; }
       for (const which of ["animIn", "animOut"] as const) {
         const value = change[which];
         if (value !== undefined) { if (value) next[which] = value; else delete next[which]; }
@@ -420,7 +424,24 @@ export default function App() {
       return current.map((clip) => clip.id === clipId ? next : clip);
     }, change.motion ? `motion:${clipId}:${change.motion.preset}`
       : change.animIn ? `anim-in:${clipId}:${change.animIn.type}`
-      : change.animOut ? `anim-out:${clipId}:${change.animOut.type}` : undefined);
+      : change.animOut ? `anim-out:${clipId}:${change.animOut.type}`
+      : change.placement ? `place-field:${clipId}` : undefined);
+  }
+
+  /** Clique no preview: seleciona o clipe (e pausa, para editar com calma). */
+  function selectClipFromPreview(clipId: string | null) {
+    setSelectedClipId(clipId);
+    if (clipId) { setSelectedCaptionId(null); setPlaying(false); }
+  }
+
+  /** Arraste no preview: um arraste inteiro vira um só passo de desfazer. */
+  function updatePlacement(clipId: string, placement: ClipPlacement, gesture: string) {
+    editClips((current) => current.map((clip) => {
+      if (clip.id !== clipId || isLocked(clip.trackId)) return clip;
+      const next = { ...clip };
+      if (isIdentity(placement)) delete next.placement; else next.placement = placement;
+      return next;
+    }), gesture);
   }
 
   /** Copia a entrada e a saída de um clipe para todas as imagens destravadas. */
@@ -934,7 +955,8 @@ export default function App() {
           ...(clip.fit === "cover" ? { fit: "cover" as const } : {}),
           ...(validMotion(clip.motion) ? { motion: validMotion(clip.motion)! } : {}),
           ...(validAnimation(clip.animIn) ? { animIn: validAnimation(clip.animIn)! } : {}),
-          ...(validAnimation(clip.animOut) ? { animOut: validAnimation(clip.animOut)! } : {}) }];
+          ...(validAnimation(clip.animOut) ? { animOut: validAnimation(clip.animOut)! } : {}),
+          ...(validPlacement(clip.placement) ? { placement: validPlacement(clip.placement)! } : {}) }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
@@ -1103,7 +1125,8 @@ export default function App() {
             <div className="preview-stage">
               <div className={`preview-canvas ratio-${ratio.replace(":", "-")}`}>
                 {previewMode === "program"
-                  ? <><ProgramMonitor media={media} tracks={tracks} clips={clips} playhead={playhead} playing={playing} />
+                  ? <><ProgramMonitor media={media} tracks={tracks} clips={clips} playhead={playhead} playing={playing}
+                      frameAspect={aspectOf(ratio)} selectedClipId={selectedClipId} onSelectClip={selectClipFromPreview} onPlacement={updatePlacement} />
                     <CaptionOverlay captions={captions} playhead={playhead} style={captionStyle} selectedId={selectedCaptionId} onSelect={editCaptionFromPreview} /></>
                   : !selected ? <div className="preview-empty"><div className="preview-logo"><MonitorPlay size={31} /></div><strong>Seu vídeo começa aqui</strong><span>Selecione um arquivo na biblioteca para visualizar.</span></div> :
                   selected.kind === "image" ? <img className="preview-media" src={selected.url} /> :

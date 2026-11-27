@@ -92,7 +92,8 @@ export function motionFilters(
   const bigW = width * factor, bigH = height * factor;
   const dim = (base: number) => `max(2,trunc(${base}*${expr.scale}/2)*2)`;
   const chains = [
-    `color=c=black:s=${bigW}x${bigH}:r=${fps}:d=${n(length)}[bg${id}]`,
+    // Fundo transparente: o que sobra em volta mostra as trilhas de baixo.
+    `color=c=black@0:s=${bigW}x${bigH}:r=${fps}:d=${n(length)},format=yuva420p[bg${id}]`,
     `[${input}]scale=w='${dim(bigW)}':h='${dim(bigH)}':eval=frame:flags=bicubic[sc${id}]`,
   ];
   let tail = `[bg${id}][sc${id}]overlay=x='(W-w)/2+W*${expr.x}':y='(H-h)/2+H*${expr.y}':eval=frame:shortest=1`;

@@ -53,7 +53,11 @@ export type TimelineClip = {
   /** Animação de entrada / saída da imagem. Ausente = sem animação. */
   animIn?: ClipAnimation;
   animOut?: ClipAnimation;
+  /** Posição, tamanho e rotação no quadro (edição direta no preview). Ausente = centralizado, sem rotação. */
+  placement?: ClipPlacement;
 };
+
+export type ClipPlacement = { x: number; y: number; scale: number; rotation: number };
 
 export type AnimationType = "fade" | "zoom-in" | "zoom-out" | "pop" | "slide-left" | "slide-right" | "slide-up" | "slide-down";
 

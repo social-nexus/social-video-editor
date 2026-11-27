@@ -3,6 +3,7 @@ import { clipEnd, clipSpeed } from "./timeline";
 import { clipVolume, effectiveFades, trackVolume } from "./audio";
 import { clipTransformExpr, motionFilters } from "./renderMotion";
 import { buildAssCaptions } from "./assCaptions";
+import { isIdentity, placementFilters } from "./placement";
 
 /** Qualidade da exportação (CRF do x264: menor = melhor e maior). */
 export const QUALITY_PRESETS = [
@@ -77,11 +78,14 @@ export function tempoChain(speed: number): string[] {
   return parts;
 }
 
-/** Enquadramento: "Encaixar" com barras pretas ou "Preencher" cortando as sobras. */
+/**
+ * Enquadramento: "Encaixar" (sobra transparente, mostra as trilhas de baixo) ou "Preencher" cortando as sobras.
+ * Sempre com canal de transparência (PNG transparente continua transparente).
+ */
 function fitFilter(clip: TimelineClip, width: number, height: number) {
   return clip.fit === "cover"
-    ? `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=bicubic,crop=${width}:${height}`
-    : `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=bicubic,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black`;
+    ? `scale=${width}:${height}:force_original_aspect_ratio=increase:flags=bicubic,crop=${width}:${height},format=yuva420p`
+    : `scale=${width}:${height}:force_original_aspect_ratio=decrease:flags=bicubic,format=yuva420p,pad=${width}:${height}:(ow-iw)/2:(oh-ih)/2:color=black@0`;
 }
 
 /**
@@ -136,18 +140,23 @@ export function buildRenderPlan(
       const timing = item.kind === "image"
         ? `trim=duration=${num(length)},setpts=PTS-STARTPTS`
         : `trim=duration=${num(length * speed)},setpts=(PTS-STARTPTS)/${num(speed)}`;
-      const prepared = `[${index}:v]${timing},fps=${fps},${fitFilter(clip, width, height)},setsar=1,format=yuv420p`;
+      const prepared = `[${index}:v]${timing},fps=${fps},${fitFilter(clip, width, height)},setsar=1`;
+      // Posição/tamanho/rotação (edição no preview): por último, por fora do movimento.
+      const placed = isIdentity(clip.placement) ? { filters: [], x: "0", y: "0" } : placementFilters(clip.placement!, width, height);
+      if (!placed) return; // ficou toda fora do quadro
+      const place = placed.filters.length ? `,${placed.filters.join(",")}` : "";
       const transform = clipTransformExpr(clip, length);
-      if (!transform) chains.push(`${prepared},setpts=PTS+${num(clip.start)}/TB[${label}]`);
+      if (!transform) chains.push(`${prepared}${place},setpts=PTS+${num(clip.start)}/TB[${label}]`);
       else {
         // Ken Burns e entrada/saída: em resolução dobrada (até 1080p) para o movimento não tremer.
         const factor = width * height <= 1920 * 1080 ? 2 : 1;
         chains.push(`${prepared}[f${overlays}]`);
         chains.push(...motionFilters(transform, `f${overlays}`, `m${overlays}`, String(overlays), { width, height, fps, length, factor }));
-        chains.push(`[m${overlays}]format=yuv420p,setpts=PTS+${num(clip.start)}/TB[${label}]`);
+        chains.push(`[m${overlays}]format=yuva420p${place},setpts=PTS+${num(clip.start)}/TB[${label}]`);
       }
       const next = `o${overlays}`;
-      chains.push(`[${current}][${label}]overlay=eof_action=pass:enable='between(t,${num(clip.start)},${num(clip.start + length)})'[${next}]`);
+      const at = placed.x === "0" && placed.y === "0" ? "" : `x='${placed.x}':y='${placed.y}':`;
+      chains.push(`[${current}][${label}]overlay=${at}eof_action=pass:enable='between(t,${num(clip.start)},${num(clip.start + length)})'[${next}]`);
       current = next;
       overlays++;
     }
