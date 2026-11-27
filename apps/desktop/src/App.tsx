@@ -2,60 +2,17 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  AudioLines, Clapperboard, Film, FolderOpen, FolderPlus, Image as ImageIcon,
-  Import, Layers3, Music2, Plus, Save, Scissors, Settings2, Sparkles,
-  Video, WandSparkles, X, ChevronDown, MonitorPlay
+  AudioLines, Clapperboard, FolderOpen, FolderPlus, Image as ImageIcon,
+  Import, Layers3, Music2, Plus, Save, Settings2, Sparkles,
+  Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
+import type { ClipGeometry, MediaItem, MediaKind, TimelineClip } from "./types";
+import { DEFAULT_IMAGE_DURATION, formatSeconds, roundTime } from "./lib/time";
+import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
+import { clipEnd, sourceDurationOf } from "./lib/timeline";
+import Timeline from "./components/Timeline";
 
-type MediaKind = "video" | "image" | "audio" | "other";
-type MediaItem = {
-  id: string; file: File | null; path: string | null; url: string; name: string; kind: MediaKind; size: number;
-  missing?: boolean;
-  /** Duração real em segundos (vídeo/áudio). null/undefined = desconhecida ou imagem. */
-  duration?: number | null;
-};
-type TimelineClip = { id: string; mediaId: string; start: number; duration: number };
-
-const PX_PER_SECOND = 42;
-const MIN_CLIP_DURATION = 0.1;
-const DEFAULT_IMAGE_DURATION = 5;
-const NARROW_CLIP_PX = 48;
-
-const roundTime = (value: number) => Math.round(value * 1000) / 1000;
-const formatSeconds = (value: number) => value.toLocaleString("pt-BR", { maximumFractionDigits: 3 });
-const parseSeconds = (text: string) => Number(text.trim().replace(",", "."));
-
-/** Lê a duração de um vídeo/áudio pelos metadados do próprio elemento de mídia. */
-function probeMediaDuration(url: string, kind: MediaKind): Promise<number | null> {
-  if ((kind !== "video" && kind !== "audio") || !url) return Promise.resolve(null);
-  return new Promise((resolve) => {
-    const element = document.createElement(kind);
-    let settled = false;
-    const finish = (value: number | null) => {
-      if (settled) return;
-      settled = true;
-      element.removeAttribute("src");
-      element.load();
-      resolve(value);
-    };
-    element.preload = "metadata";
-    element.onloadedmetadata = () => finish(Number.isFinite(element.duration) && element.duration > 0 ? element.duration : null);
-    element.onerror = () => finish(null);
-    window.setTimeout(() => finish(null), 10000);
-    element.src = url;
-  });
-}
-
-const formatSize = (bytes: number) => bytes < 1024 * 1024
-  ? `${(bytes / 1024).toFixed(0)} KB`
-  : `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-
-function kindOf(file: File): MediaKind {
-  if (file.type.startsWith("video/")) return "video";
-  if (file.type.startsWith("image/")) return "image";
-  if (file.type.startsWith("audio/")) return "audio";
-  return "other";
-}
+type FileInfo = { exists: boolean; size: number };
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -67,37 +24,30 @@ export default function App() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [clips, setClips] = useState<TimelineClip[]>([]);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
+  const [playhead, setPlayhead] = useState(0);
   const [projectName, setProjectName] = useState("Projeto sem título");
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [ratio, setRatio] = useState("9:16");
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
-  const [durationDraft, setDurationDraft] = useState("");
 
   useEffect(() => {
     invoke<string>("app_version").then(setAppVersion).catch(() => undefined);
   }, []);
 
   const selected = media.find((item) => item.id === selectedId) ?? null;
-  const selectedClip = clips.find((clip) => clip.id === selectedClipId) ?? null;
-  const selectedClipMedia = selectedClip ? media.find((item) => item.id === selectedClip.mediaId) ?? null : null;
-  const totalDuration = clips.reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
-  const timelineWidth = Math.max(760, totalDuration * PX_PER_SECOND + 120);
-
-  // Mantém o campo de duração em sincronia com o clipe selecionado.
-  useEffect(() => {
-    setDurationDraft(selectedClip ? formatSeconds(selectedClip.duration) : "");
-  }, [selectedClip?.id, selectedClip?.duration]);
   const mediaCount = useMemo(() => ({
     video: media.filter((item) => item.kind === "video").length,
     image: media.filter((item) => item.kind === "image").length,
     audio: media.filter((item) => item.kind === "audio").length,
   }), [media]);
 
+  // ---- Biblioteca ----------------------------------------------------------------
+  /** Importa arquivos vindos de um <input type="file"> (sem caminho no disco). */
   function importFiles(files: FileList | File[]) {
-    const additions = Array.from(files).map((file) => ({
+    const additions: MediaItem[] = Array.from(files).map((file) => ({
       id: crypto.randomUUID(), file, path: null, url: URL.createObjectURL(file),
-      name: file.name, kind: kindOf(file), size: file.size,
+      name: file.name, kind: kindOfFile(file), size: file.size, duration: null,
     })).filter((item) => item.kind !== "other");
     if (!additions.length) {
       setNotice("Não encontrei arquivos de vídeo, imagem ou áudio nesse grupo.");
@@ -118,21 +68,19 @@ export default function App() {
     setMedia((current) => current.map((entry) => durations.has(entry.id) ? { ...entry, duration: durations.get(entry.id) } : entry));
   }
 
-
   async function importMediaFromDisk() {
     try {
-      const paths = await open({ multiple: true, title: "Importar mídia", filters: [{ name: "Mídia", extensions: ["mp4","mov","mkv","webm","avi","m4v","jpg","jpeg","png","webp","gif","bmp","mp3","wav","m4a","aac","flac","ogg"] }] });
+      const paths = await open({ multiple: true, title: "Importar mídia", filters: [{ name: "Mídia", extensions: MEDIA_EXTENSIONS }] });
       if (!paths || typeof paths === "string") return;
-      const info = await invoke<{ exists: boolean; size: number }[]>("media_file_info", { paths });
-      const additions = paths.map((mediaPath, index) => {
-        const name = mediaPath.split(/[\\/]/).pop() || mediaPath;
-        const ext = name.split(".").pop()?.toLowerCase() || "";
-        const kind: MediaKind = ["mp4","mov","mkv","webm","avi","m4v"].includes(ext) ? "video" : ["jpg","jpeg","png","webp","gif","bmp"].includes(ext) ? "image" : ["mp3","wav","m4a","aac","flac","ogg"].includes(ext) ? "audio" : "other";
-        return { id: crypto.randomUUID(), file: null, path: mediaPath, url: convertFileSrc(mediaPath), name, kind, size: info[index]?.size ?? 0, missing: !info[index]?.exists, duration: null };
-      }).filter(item => item.kind !== "other");
+      const info = await invoke<FileInfo[]>("media_file_info", { paths });
+      const additions: MediaItem[] = paths.map((mediaPath, index) => {
+        const name = fileNameOf(mediaPath);
+        return { id: crypto.randomUUID(), file: null, path: mediaPath, url: convertFileSrc(mediaPath), name, kind: kindFromFileName(name),
+          size: info[index]?.size ?? 0, missing: !info[index]?.exists, duration: null };
+      }).filter((item) => item.kind !== "other");
       if (!additions.length) { setNotice("Nenhum arquivo de mídia compatível selecionado."); return; }
-      setMedia(current => [...current, ...additions]);
-      setSelectedId(current => current ?? additions[0].id);
+      setMedia((current) => [...current, ...additions]);
+      setSelectedId((current) => current ?? additions[0].id);
       setNotice(additions.length + " arquivo(s) importado(s) com caminho vinculado.");
       void loadMediaDurations(additions);
     } catch (error) { setNotice("Erro ao importar mídia: " + String(error)); }
@@ -142,24 +90,26 @@ export default function App() {
     try {
       const selectedPath = await open({ multiple: false, title: "Localizar arquivo: " + item.name });
       if (!selectedPath || Array.isArray(selectedPath)) return;
-      const info = await invoke<{ exists: boolean; size: number }[]>("media_file_info", { paths: [selectedPath] });
+      const info = await invoke<FileInfo[]>("media_file_info", { paths: [selectedPath] });
       if (!info[0]?.exists) { setNotice("O arquivo selecionado não foi encontrado."); return; }
-      const relinked: MediaItem = { ...item, file: null, path: selectedPath, url: convertFileSrc(selectedPath), name: selectedPath.split(/[\\/]/).pop() || item.name, size: info[0].size, missing: false };
-      setMedia(current => current.map(entry => entry.id === item.id ? relinked : entry));
+      const relinked: MediaItem = { ...item, file: null, path: selectedPath, url: convertFileSrc(selectedPath), name: fileNameOf(selectedPath), size: info[0].size, missing: false };
+      setMedia((current) => current.map((entry) => entry.id === item.id ? relinked : entry));
       setNotice("Arquivo relinkado com sucesso.");
       void loadMediaDurations([relinked]);
     } catch (error) { setNotice("Não foi possível relinkar: " + String(error)); }
   }
 
-  function selectTimelineClip(clip: TimelineClip) {
-    const item = media.find((entry) => entry.id === clip.mediaId);
-    if (!item) return;
-    setSelectedId(item.id);
-    setSelectedClipId(clip.id);
-    setPreviewTime(0);
-    setNotice(`Preview sincronizado com o clipe: ${item.name}`);
+  function removeMedia(item: MediaItem) {
+    if (item.url.startsWith("blob:")) URL.revokeObjectURL(item.url);
+    const selectedClip = clips.find((clip) => clip.id === selectedClipId);
+    setMedia((current) => current.filter((entry) => entry.id !== item.id));
+    setClips((current) => current.filter((clip) => clip.mediaId !== item.id));
+    if (selectedId === item.id) setSelectedId(null);
+    if (selectedClip?.mediaId === item.id) setSelectedClipId(null);
+    setNotice("Arquivo removido da biblioteca e da timeline.");
   }
 
+  // ---- Preview -------------------------------------------------------------------
   function togglePreviewPlayback() {
     const video = previewVideoRef.current;
     if (!video) { setNotice("Selecione um vídeo para usar os controles de reprodução."); return; }
@@ -174,51 +124,36 @@ export default function App() {
     setPreviewTime(value);
   }
 
-  const isAudioClip = (clip: TimelineClip) => media.find((item) => item.id === clip.mediaId)?.kind === "audio";
+  // ---- Timeline ------------------------------------------------------------------
+  const isAudioMedia = (mediaId: string) => media.find((item) => item.id === mediaId)?.kind === "audio";
 
-  /** Limite máximo de duração de um clipe: a duração real da mídia (vídeo/áudio) ou sem limite (imagem). */
-  function maxClipDuration(mediaId: string) {
-    const item = media.find((entry) => entry.id === mediaId);
-    return item && item.kind !== "image" && item.duration ? item.duration : Infinity;
-  }
-
-  function clampClipDuration(mediaId: string, value: number) {
-    return roundTime(Math.min(maxClipDuration(mediaId), Math.max(MIN_CLIP_DURATION, value)));
+  function selectTimelineClip(clip: TimelineClip | null) {
+    if (!clip) { setSelectedClipId(null); return; }
+    const item = media.find((entry) => entry.id === clip.mediaId);
+    if (!item) return;
+    if (clip.id === selectedClipId) return;
+    setSelectedId(item.id);
+    setSelectedClipId(clip.id);
+    setPreviewTime(0);
+    setNotice(`Preview sincronizado com o clipe: ${item.name}`);
   }
 
   function addToTimeline(item: MediaItem) {
-    const knownDuration = item.kind !== "image" && item.duration ? item.duration : null;
+    const knownDuration = sourceDurationOf(item);
     const duration = roundTime(knownDuration ?? DEFAULT_IMAGE_DURATION);
     // Cada trilha (V1 / A1) cresce de forma independente.
     const toAudioLane = item.kind === "audio";
-    const start = clips.filter((clip) => isAudioClip(clip) === toAudioLane).reduce((max, clip) => Math.max(max, clip.start + clip.duration), 0);
+    const start = clips.filter((clip) => isAudioMedia(clip.mediaId) === toAudioLane).reduce((max, clip) => Math.max(max, clipEnd(clip)), 0);
     const clipId = crypto.randomUUID();
-    setClips((current) => [...current, { id: clipId, mediaId: item.id, start: roundTime(start), duration }]);
+    setClips((current) => [...current, { id: clipId, mediaId: item.id, start: roundTime(start), duration, inPoint: 0 }]);
     setSelectedClipId(clipId);
     setNotice(knownDuration
       ? `“${item.name}” foi colocado na timeline com a duração real: ${formatSeconds(duration)}s.`
       : `“${item.name}” foi colocado na timeline. Duração inicial: ${formatSeconds(duration)}s.`);
   }
 
-  function adjustSelectedClip(change: Partial<Pick<TimelineClip, "start" | "duration">>) {
-    if (!selectedClip) return;
-    const start = roundTime(Math.max(0, change.start ?? selectedClip.start));
-    const duration = clampClipDuration(selectedClip.mediaId, change.duration ?? selectedClip.duration);
-    setClips((current) => current.map((clip) => clip.id === selectedClip.id ? { ...clip, start, duration } : clip));
-  }
-
-  function commitDurationDraft() {
-    if (!selectedClip) return;
-    const value = parseSeconds(durationDraft);
-    if (!Number.isFinite(value) || value <= 0) {
-      setDurationDraft(formatSeconds(selectedClip.duration));
-      setNotice("Duração inválida. Digite um número em segundos, por exemplo 8 ou 2,5.");
-      return;
-    }
-    const duration = clampClipDuration(selectedClip.mediaId, value);
-    adjustSelectedClip({ duration });
-    setDurationDraft(formatSeconds(duration));
-    if (duration < value) setNotice(`A mídia tem só ${formatSeconds(duration)}s. A duração foi limitada a esse valor.`);
+  function updateClip(clipId: string, change: Partial<ClipGeometry>) {
+    setClips((current) => current.map((clip) => clip.id === clipId ? { ...clip, ...change } : clip));
   }
 
   function removeClip(clipId: string) {
@@ -226,28 +161,7 @@ export default function App() {
     if (selectedClipId === clipId) setSelectedClipId(null);
   }
 
-  function removeMedia(item: MediaItem) {
-    if (item.url.startsWith("blob:")) URL.revokeObjectURL(item.url);
-    setMedia((current) => current.filter((entry) => entry.id !== item.id));
-    setClips((current) => current.filter((clip) => clip.mediaId !== item.id));
-    if (selectedId === item.id) setSelectedId(null);
-    if (selectedClip?.mediaId === item.id) setSelectedClipId(null);
-    setNotice("Arquivo removido da biblioteca e da timeline.");
-  }
-
-  function renderClip(clip: TimelineClip) {
-    const item = media.find((entry) => entry.id === clip.mediaId);
-    const audio = item?.kind === "audio";
-    const width = Math.max(4, clip.duration * PX_PER_SECOND);
-    const narrow = width < NARROW_CLIP_PX;
-    const classes = ["timeline-clip", audio ? "audio-clip" : "video-clip", selectedClipId === clip.id ? "selected" : "", narrow ? "narrow" : ""].join(" ");
-    return <div key={clip.id} className={classes} onClick={() => selectTimelineClip(clip)} style={{ left: clip.start * PX_PER_SECOND, width }} title={`${item?.name ?? "Mídia não vinculada"} · ${formatSeconds(clip.duration)}s`}>
-      {!narrow && (audio ? <AudioLines size={13} /> : <Film size={13} />)}
-      {!narrow && <span>{item?.name ?? (audio ? "Áudio" : "Mídia não vinculada")}</span>}
-      {!narrow && <button title="Remover clipe" onClick={(event) => { event.stopPropagation(); removeClip(clip.id); }}><X size={12} /></button>}
-    </div>;
-  }
-
+  // ---- Projeto -------------------------------------------------------------------
   function createProjectSnapshot() {
     return {
       format: "sveproj", schemaVersion: 1, projectName, ratio,
@@ -312,31 +226,33 @@ export default function App() {
       }
       setProjectName(typeof data.projectName === "string" ? data.projectName : "Projeto importado");
       setRatio(typeof data.ratio === "string" ? data.ratio : "9:16");
-      const savedMedia = Array.isArray(data.media) ? data.media : [];
-      const mediaPaths = savedMedia.map((item: any) => typeof item.path === "string" ? item.path : "");
-      const fileInfos = await invoke<{ exists: boolean; size: number }[]>("media_file_info", { paths: mediaPaths });
+      const savedMedia: any[] = Array.isArray(data.media) ? data.media : [];
+      const mediaPaths: string[] = savedMedia.map((item) => typeof item?.path === "string" ? item.path : "");
+      const fileInfos = await invoke<FileInfo[]>("media_file_info", { paths: mediaPaths });
       const validKinds: MediaKind[] = ["video", "image", "audio"];
-      const restoredMedia: MediaItem[] = savedMedia.map((item: any, index: number): MediaItem => {
+      const restoredMedia: MediaItem[] = savedMedia.map((item, index): MediaItem => {
         const mediaPath = mediaPaths[index];
         const exists = Boolean(mediaPath && fileInfos[index]?.exists);
-        const savedDuration = Number(item.duration);
-        return { id: String(item.id || crypto.randomUUID()), file: null, path: mediaPath || null,
-          url: exists ? convertFileSrc(mediaPath) : "", name: String(item.name || "Mídia"),
-          kind: validKinds.includes(item.kind) ? item.kind : "other", size: fileInfos[index]?.size ?? Number(item.size ?? 0), missing: !exists,
+        const savedDuration = Number(item?.duration);
+        return { id: String(item?.id || crypto.randomUUID()), file: null, path: mediaPath || null,
+          url: exists ? convertFileSrc(mediaPath) : "", name: String(item?.name || "Mídia"),
+          kind: validKinds.includes(item?.kind) ? item.kind : "other", size: fileInfos[index]?.size ?? Number(item?.size ?? 0), missing: !exists,
           duration: Number.isFinite(savedDuration) && savedDuration > 0 ? savedDuration : null };
-      }).filter((item: MediaItem) => item.kind !== "other");
+      }).filter((item) => item.kind !== "other");
       // Só restaura clipes bem formados que apontam para mídia da biblioteca.
       const mediaIds = new Set(restoredMedia.map((item) => item.id));
-      const savedClips: unknown[] = Array.isArray(data.clips) ? data.clips : [];
-      const restoredClips = savedClips.flatMap((clip: any): TimelineClip[] => {
-        const start = Number(clip?.start), duration = Number(clip?.duration);
+      const savedClips: any[] = Array.isArray(data.clips) ? data.clips : [];
+      const restoredClips = savedClips.flatMap((clip): TimelineClip[] => {
+        const start = Number(clip?.start), duration = Number(clip?.duration), inPoint = Number(clip?.inPoint ?? 0);
         if (typeof clip?.mediaId !== "string" || !mediaIds.has(clip.mediaId) || !Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0) return [];
-        return [{ id: typeof clip.id === "string" ? clip.id : crypto.randomUUID(), mediaId: clip.mediaId, start: Math.max(0, start), duration }];
+        return [{ id: typeof clip.id === "string" ? clip.id : crypto.randomUUID(), mediaId: clip.mediaId,
+          start: Math.max(0, start), duration, inPoint: Number.isFinite(inPoint) ? Math.max(0, inPoint) : 0 }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
       setClips(restoredClips);
       setSelectedClipId(null);
+      setPlayhead(0);
       setProjectPath(path);
       void loadMediaDurations(restoredMedia.filter((item) => !item.missing && !item.duration));
       const missingCount = restoredMedia.filter((item) => item.missing).length;
@@ -390,7 +306,7 @@ export default function App() {
                   </div>
                   <div className="asset-info"><strong title={item.name}>{item.name}</strong><span>{item.kind.toUpperCase()} · {formatSize(item.size)}</span></div>
                 </button>
-                <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>{item.missing &&<button className="asset-add" title="Relinkar arquivo" onClick={() => relinkMedia(item)}><FolderOpen size={14} /></button>}
+                <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>{item.missing && <button className="asset-add" title="Relinkar arquivo" onClick={() => relinkMedia(item)}><FolderOpen size={14} /></button>}
                 <button className="asset-remove" title="Remover" onClick={() => removeMedia(item)}><X size={14} /></button>
               </div>)
             }
@@ -416,41 +332,21 @@ export default function App() {
             <div className="preview-bottom"><span>{selected ? selected.name : "Nenhuma mídia selecionada"}</span><span>Proporção <b>{ratio}</b></span></div>
           </div>
 
-          <div className="timeline-panel panel">
-            <div className="timeline-toolbar">
-              <div><span className="eyebrow">EDIÇÃO</span><h2>Timeline</h2></div>
-              <div className="timeline-actions">
-                <label className="ratio-select"> <span>Formato</span><select value={ratio} onChange={(event) => setRatio(event.target.value)}><option>16:9</option><option>9:16</option><option>1:1</option><option>3:4</option><option>4:5</option></select><ChevronDown size={13} /></label>
-                <button className="button secondary compact" onClick={() => selected && addToTimeline(selected)} disabled={!selected}><Plus size={14} /> Adicionar clipe</button>
-              </div>
-            </div>
-            <div className="timeline-scroll">
-              {selectedClip && <div className="clip-edit-controls">
-                <span>Clipe selecionado</span>
-                <span className="clip-edit-name" title={selectedClipMedia?.name}>{selectedClipMedia?.name}</span>
-                <button className="button secondary compact" onClick={() => adjustSelectedClip({ start: selectedClip.start - 0.5 })} disabled={selectedClip.start <= 0}>← 0,5s</button>
-                <button className="button secondary compact" onClick={() => adjustSelectedClip({ start: selectedClip.start + 0.5 })}>0,5s →</button>
-                <span>Início {formatSeconds(selectedClip.start)}s</span>
-                <label>Duração <input type="text" inputMode="decimal" aria-label="Duração do clipe em segundos" value={durationDraft}
-                  onChange={(event) => setDurationDraft(event.target.value)}
-                  onBlur={commitDurationDraft}
-                  onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); if (event.key === "Escape") { setDurationDraft(formatSeconds(selectedClip.duration)); event.currentTarget.blur(); } }} />s</label>
-                {Number.isFinite(maxClipDuration(selectedClip.mediaId)) && <span className="clip-edit-hint">máx. {formatSeconds(maxClipDuration(selectedClip.mediaId))}s</span>}
-                <button className="button secondary compact" title="Remover clipe da timeline" onClick={() => removeClip(selectedClip.id)}><X size={12} /> Remover</button>
-              </div>}
-              <div className="timeline-ruler" style={{ width: timelineWidth }}>
-                {Array.from({ length: Math.max(8, Math.ceil(totalDuration) + 2) }, (_, i) => <span key={i} style={{ left: i * PX_PER_SECOND }}>{i}s</span>)}
-              </div>
-              <div className="track-row"><div className="track-label"><Video size={14} /> V1</div><div className="track-lane" style={{ width: timelineWidth }}>
-                {clips.filter((clip) => !isAudioClip(clip)).map(renderClip)}
-              </div></div>
-              <div className="track-row"><div className="track-label"><Music2 size={14} /> A1</div><div className="track-lane audio-lane" style={{ width: timelineWidth }}>
-                {clips.filter(isAudioClip).map(renderClip)}
-              </div></div>
-              {clips.length === 0 && <div className="timeline-empty"><Scissors size={16} /> Importe uma mídia e clique em + para adicioná-la à timeline.</div>}
-            </div>
-            <div className="timeline-footer"><span>{clips.length} clipe(s)</span><span>Duração estimada: {totalDuration.toFixed(1)}s</span><span>Arraste e edição avançada chegam nas próximas etapas</span></div>
-          </div>
+          <Timeline
+            media={media}
+            clips={clips}
+            selectedClipId={selectedClipId}
+            playhead={playhead}
+            ratio={ratio}
+            canAddClip={Boolean(selected)}
+            onRatioChange={setRatio}
+            onAddClip={() => selected && addToTimeline(selected)}
+            onSelectClip={selectTimelineClip}
+            onUpdateClip={updateClip}
+            onRemoveClip={removeClip}
+            onPlayheadChange={setPlayhead}
+            onNotice={setNotice}
+          />
         </section>
 
         <aside className="properties-panel panel">
@@ -460,6 +356,7 @@ export default function App() {
             <span className="eyebrow">ARQUIVO SELECIONADO</span><h3>{selected.name}</h3>
             <div className="property-line"><span>Tipo</span><b>{selected.kind}</b></div>
             <div className="property-line"><span>Tamanho</span><b>{formatSize(selected.size)}</b></div>
+            {selected.duration ? <div className="property-line"><span>Duração</span><b>{formatSeconds(selected.duration)}s</b></div> : null}
             <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
             <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
           </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}

@@ -9,3 +9,14 @@
 .statusbar{height:27px;flex:none;display:flex;align-items:center;justify-content:space-between;padding:0 17px;border-top:1px solid #292932;background:#101015;color:#777783;font-size:9px}.statusbar>span:first-child{display:flex;align-items:center;gap:7px}.status-dot{height:6px;width:6px;border-radius:50%;background:#42c98e;display:inline-block}
 @media(max-width:1150px){.workspace{grid-template-columns:225px minmax(360px,1fr) 215px;gap:8px;padding:9px}.topbar{padding:0 14px}.brand{width:195px}.timeline-panel{height:245px}.tools-card{margin:8px;padding:9px}}.timeline-clip{cursor:pointer}.timeline-clip.selected{outline:2px solid #f6c1dd;outline-offset:-2px;z-index:2}.timeline-clip.narrow{padding:0;gap:0}
 .clip-edit-controls input{text-align:right}.clip-edit-hint{color:#6f6f7b}
+.timeline-panel{height:290px}.timeline-tracks{position:relative}.clip-edit-controls{flex:none;padding:4px 13px}
+.timeline-ruler{cursor:col-resize;user-select:none}.timeline-ruler span{white-space:nowrap;pointer-events:none}
+.track-lane{background-image:none}
+.timeline-clip{user-select:none;touch-action:none;cursor:grab}.timeline-clip.dragging{cursor:grabbing;opacity:.92;box-shadow:0 6px 18px #0008;z-index:3}
+.clip-handle{position:absolute;top:0;bottom:0;cursor:ew-resize;z-index:1}.clip-handle.start{left:0;border-radius:5px 0 0 5px}.clip-handle.end{right:0;border-radius:0 5px 5px 0}
+.timeline-clip:hover .clip-handle,.timeline-clip.selected .clip-handle{background:#ffffff26}.clip-handle:hover{background:#ffffff55!important}
+.timeline-playhead{position:absolute;top:0;bottom:0;width:2px;margin-left:-1px;background:var(--orange);pointer-events:none;z-index:4;box-shadow:0 0 6px #fb923c88}
+.timeline-playhead::before{content:"";position:absolute;top:0;left:-5px;border:6px solid transparent;border-top:8px solid var(--orange)}
+.timeline-timecode{font:600 11px ui-monospace,SFMono-Regular,Consolas,monospace;color:#fdba74;background:#1b1b23;border:1px solid #30303a;border-radius:6px;padding:6px 8px;min-width:74px;text-align:center}
+.zoom-controls{display:flex;align-items:center;gap:4px}.zoom-controls input{width:80px;accent-color:var(--pink)}.icon-button:disabled{opacity:.35;cursor:not-allowed}
+.timeline-ruler{overflow:hidden}
