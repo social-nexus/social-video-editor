@@ -137,3 +137,25 @@
 .caption-overlay.hl-box .caption-word.active { background: var(--caption-highlight); border-radius: .16em; padding: 0 .12em; margin: 0 -.12em; }
 .caption-style-group { margin: 6px 0; padding: 8px 0; border-top: 1px solid #2c2b35; border-bottom: 1px solid #2c2b35; display: flex; flex-direction: column; gap: 6px; }
 .caption-setting input[type=color] { width: 28px; height: 20px; padding: 0; border: 1px solid #3a3944; border-radius: 4px; background: none; cursor: pointer; flex: none; }
+
+/* Exportação */
+.export-modal { width: min(620px, 100%); }
+.export-body { padding: 14px 18px 0; display: flex; flex-direction: column; gap: 10px; font-size: 11px; color: #c4c4cc; overflow: auto; }
+.export-ffmpeg { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; padding: 8px 10px; border: 1px solid #2f3a33; background: #13201a; border-radius: 8px; color: #8fe0b5; }
+.export-ffmpeg.bad { border-color: #4a3324; background: #22160f; color: #fdba74; }
+.export-ffmpeg > span:not(.export-ffmpeg-actions) { flex: 1; min-width: 160px; }
+.export-ffmpeg-actions { display: flex; gap: 6px; }
+.export-grid { border: 0; margin: 0; padding: 0; display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+.export-grid label { display: flex; flex-direction: column; gap: 4px; color: #9d9da8; font-size: 10px; }
+.export-grid select { background: #1b1b23; border: 1px solid #33333d; border-radius: 6px; color: #e4e4e7; padding: 6px 7px; font-size: 11px; }
+.export-summary { margin: 0; display: flex; align-items: center; gap: 6px; color: #9d9da8; }
+.export-summary b { color: #fff; }
+.export-note { margin: 0; display: flex; align-items: flex-start; gap: 6px; line-height: 1.5; color: #a5b4fc; }
+.export-note.warn { color: #fdba74; flex-wrap: wrap; }
+.export-note.ok { color: #8fe0b5; flex-wrap: wrap; }
+.export-note code { background: #24242d; border-radius: 4px; padding: 1px 5px; color: #e4e4e7; word-break: break-all; }
+.export-note pre { flex-basis: 100%; margin: 4px 0 0; padding: 8px; background: #101015; border-radius: 6px; color: #d4d4d8; font-size: 9.5px; white-space: pre-wrap; max-height: 140px; overflow: auto; }
+.export-progress { display: flex; flex-direction: column; gap: 6px; }
+.export-bar { height: 8px; border-radius: 4px; background: #24242d; overflow: hidden; }
+.export-bar div { height: 100%; background: linear-gradient(90deg, var(--pink), var(--orange)); transition: width .2s; }
+.export-progress span { color: #9d9da8; font-variant-numeric: tabular-nums; }

@@ -2,6 +2,8 @@ use std::fs;
 use std::path::Path;
 use tauri::Manager;
 
+mod render;
+
 #[derive(serde::Serialize)]
 struct MediaFileInfo {
     exists: bool,
@@ -88,7 +90,11 @@ fn list_media_files(folder: String) -> Result<Vec<String>, String> {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![app_version, save_project_file, read_project_file, media_file_info, list_media_files, read_text_file, write_text_file])
+        .manage(render::RenderState::default())
+        .invoke_handler(tauri::generate_handler![
+            app_version, save_project_file, read_project_file, media_file_info, list_media_files, read_text_file, write_text_file,
+            render::ffmpeg_info, render::probe_media, render::start_render, render::cancel_render
+        ])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar Social Video Editor");
 }

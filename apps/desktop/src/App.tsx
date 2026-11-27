@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  AudioLines, Clapperboard, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon,
+  AudioLines, Clapperboard, Download, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon,
   Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
@@ -23,6 +23,7 @@ import { emptyHistory, mapHistory, record, redo, undo, type History } from "./li
 import Timeline, { type TrackFlag } from "./components/Timeline";
 import ProgramMonitor from "./components/ProgramMonitor";
 import AssemblyDialog from "./components/AssemblyDialog";
+import ExportDialog from "./components/ExportDialog";
 import type { AssemblyPlan } from "./lib/autoassemble";
 
 type FileInfo = { exists: boolean; size: number };
@@ -66,6 +67,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
   const [assemblyOpen, setAssemblyOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
   const { tracks, clips, captions } = timeline;
 
   // Histórico de edições da timeline (trilhas + clipes). Os refs guardam o valor mais recente
@@ -664,7 +666,7 @@ export default function App() {
 
   // ---- Atalhos de teclado --------------------------------------------------------
   function handleShortcut(event: KeyboardEvent) {
-    if (assemblyOpen) return;
+    if (assemblyOpen || exportOpen) return;
     const target = event.target;
     if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
     const ctrl = event.ctrlKey || event.metaKey;
@@ -856,6 +858,7 @@ export default function App() {
           <button className="button secondary" onClick={openProject}><FolderOpen size={16} /> Abrir</button>
           <button className="button primary" onClick={saveProject}><Save size={16} /> Salvar</button>
           <button className="button secondary" onClick={saveProjectAs}>Salvar como</button>
+          <button className="button primary" disabled={!clips.length} onClick={() => setExportOpen(true)} title="Gerar o vídeo final (MP4)"><Download size={16} /> Exportar</button>
           <button className="icon-button" title="Configurações" onClick={() => setNotice("As configurações serão implementadas nas próximas etapas.")}><Settings2 size={18} /></button>
         </div>
       </header>
@@ -998,6 +1001,8 @@ export default function App() {
         </aside>
       </main>
       <footer className="statusbar"><span><i className="status-dot" /> {notice}</span><span>Social Video Editor · v{appVersion} · Projeto local</span></footer>
+      {exportOpen && <ExportDialog state={timeline} media={media} ratio={ratio} projectName={projectName}
+        onClose={() => setExportOpen(false)} onNotice={setNotice} />}
       {assemblyOpen && <AssemblyDialog media={media} timelineHasClips={clips.length > 0} onClose={() => setAssemblyOpen(false)} onApply={applyAssembly} />}
     </div>
   );
