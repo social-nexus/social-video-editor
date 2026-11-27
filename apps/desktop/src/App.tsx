@@ -6,10 +6,11 @@ import {
   Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
-import type { ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
+import type { ClipAudio, ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
 import { clipEnd, sourceDurationOf, splitClip } from "./lib/timeline";
+import { clampFade, formatPercent } from "./lib/audio";
 import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor } from "./lib/tracks";
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline, { type TrackFlag } from "./components/Timeline";
@@ -53,6 +54,8 @@ export default function App() {
   const playheadRef = useRef(playhead);
   playheadRef.current = playhead;
   const clipboardRef = useRef<TimelineClip | null>(null);
+  /** Última edição "contínua" (arrastar um volume): edições seguidas com a mesma chave viram um só passo de desfazer. */
+  const lastMergeRef = useRef<{ key: string; at: number } | null>(null);
 
   useEffect(() => {
     invoke<string>("app_version").then(setAppVersion).catch(() => undefined);
@@ -237,11 +240,15 @@ export default function App() {
   }
 
   /** Toda edição da timeline passa por aqui para poder ser desfeita. */
-  function editTimeline(updater: (current: TimelineState) => TimelineState) {
+  function editTimeline(updater: (current: TimelineState) => TimelineState, mergeKey?: string) {
     const current = timelineRef.current;
     const next = updater(current);
     if (next === current) return;
-    applyHistory(record(historyRef.current, current));
+    const now = Date.now();
+    const last = lastMergeRef.current;
+    const merge = Boolean(mergeKey && last && last.key === mergeKey && now - last.at < 1500 && historyRef.current.past.length);
+    if (!merge) applyHistory(record(historyRef.current, current));
+    lastMergeRef.current = mergeKey ? { key: mergeKey, at: now } : null;
     setTimelineNow(next);
   }
 
@@ -301,6 +308,37 @@ export default function App() {
       if (merged.start === target.start && merged.duration === target.duration && merged.inPoint === target.inPoint) return current;
       return current.map((clip) => clip.id === clipId ? merged : clip);
     });
+  }
+
+  /** Volume e fades do clipe. Arrastar o volume vira um só passo de desfazer. */
+  function updateClipAudio(clipId: string, change: ClipAudio) {
+    editTimeline((state) => {
+      const target = state.clips.find((clip) => clip.id === clipId);
+      if (!target || isLocked(target.trackId)) return state;
+      const next: TimelineClip = { ...target };
+      if (change.volume !== undefined) next.volume = Math.round(Math.min(1, Math.max(0, change.volume)) * 100) / 100;
+      if (change.fadeIn !== undefined) next.fadeIn = clampFade(target, "fadeIn", change.fadeIn);
+      if (change.fadeOut !== undefined) next.fadeOut = clampFade(target, "fadeOut", change.fadeOut);
+      if (next.volume === 1) delete next.volume;
+      if (!next.fadeIn) delete next.fadeIn;
+      if (!next.fadeOut) delete next.fadeOut;
+      if (next.volume === target.volume && next.fadeIn === target.fadeIn && next.fadeOut === target.fadeOut) return state;
+      return { ...state, clips: state.clips.map((clip) => clip.id === clipId ? next : clip) };
+    }, change.volume !== undefined ? `volume:${clipId}` : undefined);
+  }
+
+  function setTrackVolume(trackId: string, volume: number) {
+    const level = Math.round(Math.min(1, Math.max(0, volume)) * 100) / 100;
+    editTimeline((state) => {
+      const track = state.tracks.find((entry) => entry.id === trackId);
+      if (!track || (track.volume ?? 1) === level) return state;
+      return { ...state, tracks: state.tracks.map((entry) => {
+        if (entry.id !== trackId) return entry;
+        const { volume: _old, ...rest } = entry;
+        return level === 1 ? rest : { ...rest, volume: level };
+      }) };
+    }, `track-volume:${trackId}`);
+    setNotice(`Volume da trilha: ${formatPercent(level)}.`);
   }
 
   /** Coloca um clipe em [start, fim) de uma trilha, sobrescrevendo o que estiver embaixo. */
@@ -569,7 +607,11 @@ export default function App() {
       const savedTracks: any[] = Array.isArray(data.tracks) ? data.tracks : [];
       const restoredTracks: Track[] = savedTracks
         .filter((track) => typeof track?.id === "string" && (track.kind === "video" || track.kind === "audio"))
-        .map((track) => ({ id: track.id, kind: track.kind, hidden: Boolean(track.hidden), muted: Boolean(track.muted), locked: Boolean(track.locked) }));
+        .map((track): Track => {
+          const volume = Number(track.volume);
+          return { id: track.id, kind: track.kind, hidden: Boolean(track.hidden), muted: Boolean(track.muted), locked: Boolean(track.locked),
+            ...(Number.isFinite(volume) && volume >= 0 && volume < 1 ? { volume } : {}) };
+        });
       if (!restoredTracks.some((track) => track.kind === "video")) restoredTracks.unshift(newTrack("video"));
       if (!restoredTracks.some((track) => track.kind === "audio")) restoredTracks.push(newTrack("audio"));
 
@@ -579,6 +621,7 @@ export default function App() {
       const restoredClips = savedClips.flatMap((clip): TimelineClip[] => {
         const start = Number(clip?.start), duration = Number(clip?.duration), inPoint = Number(clip?.inPoint ?? 0);
         const speed = Number(clip?.speed ?? 1);
+        const volume = Number(clip?.volume ?? 1), fadeIn = Number(clip?.fadeIn ?? 0), fadeOut = Number(clip?.fadeOut ?? 0);
         const item = typeof clip?.mediaId === "string" ? mediaById.get(clip.mediaId) : undefined;
         if (!item || !Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0) return [];
         const kind = trackKindFor(item.kind);
@@ -586,7 +629,10 @@ export default function App() {
           ?? restoredTracks.find((entry) => entry.kind === kind)!;
         return [{ id: typeof clip.id === "string" ? clip.id : crypto.randomUUID(), mediaId: item.id, trackId: track.id,
           start: Math.max(0, start), duration, inPoint: Number.isFinite(inPoint) ? Math.max(0, inPoint) : 0,
-          ...(Number.isFinite(speed) && speed > 0 && speed !== 1 ? { speed } : {}) }];
+          ...(Number.isFinite(speed) && speed > 0 && speed !== 1 ? { speed } : {}),
+          ...(Number.isFinite(volume) && volume >= 0 && volume < 1 ? { volume } : {}),
+          ...(Number.isFinite(fadeIn) && fadeIn > 0 ? { fadeIn } : {}),
+          ...(Number.isFinite(fadeOut) && fadeOut > 0 ? { fadeOut } : {}) }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
@@ -717,6 +763,8 @@ export default function App() {
             onAddClip={() => selected && addToTimeline(selected)}
             onSelectClip={selectTimelineClip}
             onUpdateClip={updateClip}
+            onUpdateClipAudio={updateClipAudio}
+            onSetTrackVolume={setTrackVolume}
             onMoveClip={moveClip}
             onRemoveClip={removeClip}
             onPlayheadChange={movePlayhead}

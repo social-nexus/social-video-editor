@@ -3,6 +3,7 @@ import { MonitorPlay } from "lucide-react";
 import type { MediaItem, TimelineClip, Track } from "../types";
 import { clipsAt } from "../lib/tracks";
 import { clipSpeed } from "../lib/timeline";
+import { clipGainAt, trackVolume } from "../lib/audio";
 
 /** Tolerância de dessincronia antes de reposicionar a mídia (segundos). */
 const PAUSED_TOLERANCE = 0.04;
@@ -15,11 +16,13 @@ type SyncedMediaProps = {
   playhead: number;
   playing: boolean;
   muted: boolean;
+  /** Volume no instante do playhead (0–1), já com fades e volume da trilha. */
+  volume: number;
   visible: boolean;
 };
 
 /** Um <video>/<audio> que segue o playhead da timeline (respeitando o ponto de entrada do clipe). */
-function SyncedMedia({ kind, url, clip, playhead, playing, muted, visible }: SyncedMediaProps) {
+function SyncedMedia({ kind, url, clip, playhead, playing, muted, volume, visible }: SyncedMediaProps) {
   const ref = useRef<HTMLVideoElement & HTMLAudioElement>(null);
   const speed = clipSpeed(clip);
   const expected = Math.max(0, clip.inPoint + (playhead - clip.start) * speed);
@@ -28,6 +31,8 @@ function SyncedMedia({ kind, url, clip, playhead, playing, muted, visible }: Syn
     const element = ref.current;
     if (!element) return;
     element.muted = muted;
+    const level = Math.min(1, Math.max(0, volume));
+    if (Math.abs(element.volume - level) > 0.001) element.volume = level;
     if (element.playbackRate !== speed) element.playbackRate = speed;
     if (!playing) {
       if (!element.paused) element.pause();
@@ -71,6 +76,7 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
   };
 
   const active = clipsAt(clips, playhead);
+  const gainOf = (clip: TimelineClip) => clipGainAt(clip, playhead) * trackVolume(trackById.get(clip.trackId));
   const videoTracks = tracks.filter((track) => track.kind === "video");
 
   // Clipe visível: de cima (última trilha de vídeo) para baixo.
@@ -97,11 +103,11 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
     </div> : visualItem.kind === "image"
       ? <img className="preview-media" src={visualItem.url} alt="" />
       : <SyncedMedia key={visual.id} kind="video" url={visualItem.url} clip={visual} playhead={playhead} playing={playing}
-          muted={Boolean(trackById.get(visual.trackId)?.muted)} visible />}
+          muted={Boolean(trackById.get(visual.trackId)?.muted)} volume={gainOf(visual)} visible />}
     {sounds.map((clip) => {
       const item = playable(clip)!;
       return <SyncedMedia key={clip.id} kind={item.kind === "audio" ? "audio" : "video"} url={item.url} clip={clip}
-        playhead={playhead} playing={playing} muted={false} visible={false} />;
+        playhead={playhead} playing={playing} muted={false} volume={gainOf(clip)} visible={false} />;
     })}
   </>;
 }

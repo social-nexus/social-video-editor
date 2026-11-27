@@ -102,9 +102,11 @@ export function splitClip(clip: TimelineClip, at: number, newId: string, hasSour
   const cut = roundTime(at);
   if (cut < clip.start + MIN_CLIP_DURATION || cut > clipEnd(clip) - MIN_CLIP_DURATION) return null;
   const firstDuration = roundTime(cut - clip.start);
-  const first: TimelineClip = { ...clip, duration: firstDuration };
+  const { fadeOut: _out, ...withoutFadeOut } = clip;
+  const { fadeIn: _in, ...withoutFadeIn } = clip;
+  const first: TimelineClip = { ...withoutFadeOut, duration: firstDuration };
   const second: TimelineClip = {
-    ...clip, id: newId, start: cut, duration: roundTime(clipEnd(clip) - cut),
+    ...withoutFadeIn, id: newId, start: cut, duration: roundTime(clipEnd(clip) - cut),
     inPoint: hasSource ? roundTime(clip.inPoint + firstDuration * clipSpeed(clip)) : 0,
   };
   return [first, second];

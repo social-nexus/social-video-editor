@@ -25,6 +25,8 @@ export type Track = {
   muted: boolean;
   /** Trilha travada não aceita edições. */
   locked: boolean;
+  /** Volume da trilha (0–1). Ausente = 100%. */
+  volume?: number;
 };
 
 export type TimelineClip = {
@@ -39,7 +41,15 @@ export type TimelineClip = {
   inPoint: number;
   /** Velocidade de reprodução (1 = normal, 0,5 = metade). Ausente = 1. */
   speed?: number;
+  /** Volume do clipe (0–1). Ausente = 100%. */
+  volume?: number;
+  /** Fade de entrada / saída do som, em segundos. Ausente = sem fade. */
+  fadeIn?: number;
+  fadeOut?: number;
 };
+
+/** Ajustes de som de um clipe. */
+export type ClipAudio = Pick<TimelineClip, "volume" | "fadeIn" | "fadeOut">;
 
 /** Parte do clipe que muda ao mover ou aparar. */
 export type ClipGeometry = Pick<TimelineClip, "start" | "duration" | "inPoint">;

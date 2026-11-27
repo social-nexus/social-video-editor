@@ -64,3 +64,20 @@
 /* Velocidade do clipe (ex.: último vídeo esticado na montagem automática). */
 .timeline-clip .clip-speed { font-style: normal; font-size: 10px; font-weight: 700; padding: 1px 4px; border-radius: 4px; background: rgba(251, 146, 60, 0.22); color: #fb923c; flex: none; }
 .assembly-table .speed-tag { color: #fb923c; }
+
+/* Áudio: forma de onda, fades, volume. */
+.timeline-clip .clip-wave { position: absolute; left: 0; top: 0; pointer-events: none; opacity: .5; }
+.timeline-clip.video-clip .clip-wave { opacity: .28; }
+.timeline-clip .clip-fade { position: absolute; top: 0; bottom: 0; pointer-events: none; }
+.timeline-clip .clip-fade.in { left: 0; background: linear-gradient(to top left, transparent 49%, rgba(8, 8, 12, .55) 51%); }
+.timeline-clip .clip-fade.out { right: 0; background: linear-gradient(to top right, transparent 49%, rgba(8, 8, 12, .55) 51%); }
+.timeline-clip > svg, .timeline-clip > span, .timeline-clip > em, .timeline-clip > button { position: relative; z-index: 1; }
+.timeline-clip .clip-volume { font-style: normal; font-size: 10px; font-weight: 700; padding: 1px 4px; border-radius: 4px; background: rgba(255, 255, 255, .14); flex: none; }
+.track-label { flex-wrap: wrap; align-content: center; row-gap: 1px; }
+.track-label .track-volume { width: 100%; height: 10px; margin: 0 0 0 4px; accent-color: var(--pink); cursor: pointer; }
+.track-label.audio .track-volume { accent-color: #3fbfa8; }
+.track-label .track-volume:disabled { opacity: .4; cursor: not-allowed; }
+.clip-audio-controls { border-top: 0; }
+.clip-audio-controls .clip-volume-range { width: 110px; padding: 0; border: 0; background: none; accent-color: var(--pink); }
+.clip-audio-controls b.mono { min-width: 32px; color: #d4d4d8; font-weight: 600; }
+.clip-audio-controls > span { display: flex; align-items: center; gap: 4px; color: #8fd8c8; }

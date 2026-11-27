@@ -56,12 +56,14 @@ export function overwriteRange(
     const clipStop = clipEnd(clip);
     if (clip.trackId !== trackId || clipStop <= start + 1e-9 || clipStart >= end - 1e-9) { result.push(clip); continue; }
     // Parte que sobra à esquerda do intervalo.
-    if (clipStart < start) keep({ ...clip, duration: roundTime(start - clipStart) });
+    const { fadeIn: _in, ...withoutFadeIn } = clip;
+    const { fadeOut: _out, ...withoutFadeOut } = clip;
+    if (clipStart < start) keep({ ...withoutFadeOut, duration: roundTime(start - clipStart) });
     // Parte que sobra à direita do intervalo.
     if (clipStop > end) {
       const cut = end - clipStart;
       keep({
-        ...clip,
+        ...withoutFadeIn,
         id: clipStart < start ? newId() : clip.id,
         start: roundTime(end),
         duration: roundTime(clipStop - end),

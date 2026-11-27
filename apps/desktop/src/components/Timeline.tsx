@@ -4,13 +4,15 @@ import {
   AudioLines, ChevronDown, Copy, Eye, EyeOff, Film, Lock, LockOpen, Maximize2, Plus, Redo2, Scissors,
   SquareSplitHorizontal, Trash2, Undo2, Volume2, VolumeX, X, ZoomIn, ZoomOut,
 } from "lucide-react";
-import type { ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
+import type { ClipAudio, ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
 import { formatSeconds, formatTimecode, parseSeconds, roundTime } from "../lib/time";
 import {
   applyClipDrag, clampClipDuration, clipEnd, clipSpeed, maxClipDuration, rulerStep, snapTargetsFor, sourceDurationOf,
   type DragMode,
 } from "../lib/timeline";
 import { freeBounds, trackKindFor, trackLabel } from "../lib/tracks";
+import { clipVolume, effectiveFades, formatPercent, trackVolume } from "../lib/audio";
+import ClipWaveform from "./ClipWaveform";
 
 const TRACK_LABEL_PX = 104;
 /** Distância, no conteúdo rolável, entre a borda esquerda e o instante 0 (padding + cabeçalho da trilha). */
@@ -62,6 +64,8 @@ type Props = {
   /** Fim de um arraste "mover": nova posição e (talvez) nova trilha. Sobrescreve o que estiver embaixo. */
   onMoveClip: (clipId: string, geometry: ClipGeometry, trackId: string) => void;
   onRemoveClip: (clipId: string) => void;
+  onUpdateClipAudio: (clipId: string, change: ClipAudio) => void;
+  onSetTrackVolume: (trackId: string, volume: number) => void;
   onPlayheadChange: (seconds: number) => void;
   onNotice: (message: string) => void;
   onAddTrack: (kind: TrackKind) => void;
@@ -77,6 +81,8 @@ export default function Timeline(props: Props) {
   const dragRef = useRef<DragState | null>(null);
   const zoomAnchorRef = useRef<{ time: number; offsetX: number } | null>(null);
   const [durationDraft, setDurationDraft] = useState("");
+  const [fadeInDraft, setFadeInDraft] = useState("");
+  const [fadeOutDraft, setFadeOutDraft] = useState("");
   const [viewportWidth, setViewportWidth] = useState(800);
 
   useEffect(() => {
@@ -118,6 +124,24 @@ export default function Timeline(props: Props) {
   useEffect(() => {
     setDurationDraft(selectedClip ? formatSeconds(selectedClip.duration) : "");
   }, [selectedClip?.id, selectedClip?.duration]);
+
+  useEffect(() => {
+    setFadeInDraft(selectedClip ? formatSeconds(selectedClip.fadeIn ?? 0) : "");
+    setFadeOutDraft(selectedClip ? formatSeconds(selectedClip.fadeOut ?? 0) : "");
+  }, [selectedClip?.id, selectedClip?.fadeIn, selectedClip?.fadeOut]);
+
+  const selectedHasSound = Boolean(selectedMedia && selectedMedia.kind !== "image");
+
+  function commitFade(which: "fadeIn" | "fadeOut") {
+    if (!selectedClip) return;
+    const draft = which === "fadeIn" ? fadeInDraft : fadeOutDraft;
+    const value = draft.trim() === "" ? 0 : parseSeconds(draft);
+    const reset = () => (which === "fadeIn" ? setFadeInDraft : setFadeOutDraft)(formatSeconds(selectedClip[which] ?? 0));
+    if (!Number.isFinite(value) || value < 0) { reset(); props.onNotice("Digite o fade em segundos, por exemplo 0,5."); return; }
+    props.onUpdateClipAudio(selectedClip.id, { [which]: value });
+    const other = (which === "fadeIn" ? selectedClip.fadeOut : selectedClip.fadeIn) ?? 0;
+    if (value > selectedClip.duration - other + 1e-6) props.onNotice("O fade foi limitado ao espaço livre do clipe.");
+  }
 
   // ---- Arrastar / aparar clipes -------------------------------------------------
   function beginDrag(event: ReactPointerEvent, clip: TimelineClip, mode: DragMode) {
@@ -298,12 +322,19 @@ export default function Timeline(props: Props) {
     const classes = ["timeline-clip", audio ? "audio-clip" : "video-clip", item?.kind === "image" ? "image-clip" : "",
       selectedClipId === clip.id ? "selected" : "", narrow ? "narrow" : "", drag?.clipId === clip.id ? "dragging" : ""].join(" ");
     const handleWidth = Math.min(7, width / 3);
+    const sound = item && item.kind !== "image";
+    const fades = sound ? effectiveFades({ ...clip, duration: geometry.duration }) : { fadeIn: 0, fadeOut: 0 };
+    const volume = clipVolume(clip);
     return <div key={clip.id} className={classes} style={{ left: geometry.start * pps, width }}
       onPointerDown={(event) => beginDrag(event, clip, "move")}
-      title={`${item?.name ?? "Mídia não vinculada"} · ${formatSeconds(geometry.duration)}s`}>
+      title={`${item?.name ?? "Mídia não vinculada"} · ${formatSeconds(geometry.duration)}s${sound && volume !== 1 ? ` · volume ${formatPercent(volume)}` : ""}`}>
+      {sound && item && <ClipWaveform item={item} inPoint={geometry.inPoint} sourceSpan={geometry.duration * clipSpeed(clip)} width={width} height={30} />}
+      {fades.fadeIn > 0 && <div className="clip-fade in" style={{ width: fades.fadeIn * pps }} />}
+      {fades.fadeOut > 0 && <div className="clip-fade out" style={{ width: fades.fadeOut * pps }} />}
       {!locked && <div className="clip-handle start" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-start")} />}
       {!narrow && (audio ? <AudioLines size={13} /> : <Film size={13} />)}
       {!narrow && <span>{item?.name ?? (audio ? "Áudio" : "Mídia não vinculada")}</span>}
+      {!narrow && sound && volume !== 1 && <em className="clip-volume" title="Volume do clipe">{formatPercent(volume)}</em>}
       {!narrow && clipSpeed(clip) !== 1 && <em className="clip-speed" title="Velocidade do clipe">{Math.round(clipSpeed(clip) * 100)}%</em>}
       {!narrow && !locked && <button title="Remover clipe" onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => { event.stopPropagation(); props.onRemoveClip(clip.id); }}><X size={12} /></button>}
@@ -323,6 +354,11 @@ export default function Timeline(props: Props) {
       <button className={track.locked ? "active" : ""} title={track.locked ? "Destravar trilha" : "Travar trilha"}
         onClick={() => props.onToggleTrack(track.id, "locked")}>{track.locked ? <Lock size={12} /> : <LockOpen size={12} />}</button>
       {empty && sameKind > 1 && <button title="Remover trilha vazia" onClick={() => props.onRemoveTrack(track.id)}><Trash2 size={12} /></button>}
+      <input className="track-volume" type="range" min={0} max={100} step={1} value={Math.round(trackVolume(track) * 100)}
+        disabled={track.locked} aria-label={`Volume da trilha ${trackLabel(track, tracks)}`}
+        title={`Volume da trilha: ${formatPercent(trackVolume(track))} (duplo clique volta a 100%)`}
+        onChange={(event) => props.onSetTrackVolume(track.id, Number(event.target.value) / 100)}
+        onDoubleClick={() => props.onSetTrackVolume(track.id, 1)} />
     </div>;
   }
 
@@ -370,6 +406,23 @@ export default function Timeline(props: Props) {
           {selectedClip.inPoint > 0 && <span className="clip-edit-hint">entrada na mídia {formatSeconds(selectedClip.inPoint)}s</span>}
           <button className="button secondary compact" title="Remover clipe da timeline" onClick={() => props.onRemoveClip(selectedClip.id)}><X size={12} /> Remover</button>
         </>}
+      </div>}
+      {selectedClip && selectedHasSound && !selectedLocked && <div className="clip-edit-controls clip-audio-controls">
+        <span><Volume2 size={11} /> Som</span>
+        <label>Volume <input className="clip-volume-range" type="range" min={0} max={100} step={1} value={Math.round(clipVolume(selectedClip) * 100)}
+          aria-label="Volume do clipe" title="Duplo clique volta a 100%"
+          onChange={(event) => props.onUpdateClipAudio(selectedClip.id, { volume: Number(event.target.value) / 100 })}
+          onDoubleClick={() => props.onUpdateClipAudio(selectedClip.id, { volume: 1 })} />
+          <b className="mono">{formatPercent(clipVolume(selectedClip))}</b></label>
+        <button className="button secondary compact" title="Silenciar só este clipe"
+          onClick={() => props.onUpdateClipAudio(selectedClip.id, { volume: clipVolume(selectedClip) > 0 ? 0 : 1 })}>
+          {clipVolume(selectedClip) > 0 ? <><VolumeX size={12} /> Mudo</> : <><Volume2 size={12} /> Som</>}</button>
+        <label>Fade in <input type="text" inputMode="decimal" aria-label="Fade de entrada em segundos" value={fadeInDraft}
+          onChange={(event) => setFadeInDraft(event.target.value)} onBlur={() => commitFade("fadeIn")}
+          onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />s</label>
+        <label>Fade out <input type="text" inputMode="decimal" aria-label="Fade de saída em segundos" value={fadeOutDraft}
+          onChange={(event) => setFadeOutDraft(event.target.value)} onBlur={() => commitFade("fadeOut")}
+          onKeyDown={(event) => { if (event.key === "Enter") event.currentTarget.blur(); }} />s</label>
       </div>}
 
       <div className="timeline-scroll" ref={scrollRef}>
