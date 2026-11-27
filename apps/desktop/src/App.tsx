@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, Fragment } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import type { PointerEvent as ReactPointerEvent, CSSProperties } from "react";
@@ -25,7 +25,7 @@ import AssemblyDialog from "./components/AssemblyDialog";
 import ExportDialog from "./components/ExportDialog";
 import StartScreen from "./components/StartScreen";
 import Splitter from "./components/Splitter";
-import { clampSide, clampTimeline, loadLayout, saveLayout, type PanelLayout } from "./lib/layout";
+import { clampSide, clampTimeline, DEFAULT_DOCKS, loadDocks, loadLayout, moveDock, sameDocks, saveDocks, saveLayout, type Docks, type PanelId, type PanelLayout } from "./lib/layout";
 import UnsavedDialog from "./components/UnsavedDialog";
 import { isIdentity, validPlacement } from "./lib/placement";
 import { endDrag, moveDrag, resolveDrop, type DragPayload, type DropSpot } from "./lib/dragMedia";
@@ -87,8 +87,8 @@ export default function App() {
 
   function measurePanels() {
     const workspace = workspaceRef.current, center = centerRef.current;
-    const left = workspace?.querySelector<HTMLElement>(".media-panel")?.offsetWidth ?? 260;
-    const right = workspace?.querySelector<HTMLElement>(".properties-panel")?.offsetWidth ?? 250;
+    const left = workspace?.querySelector<HTMLElement>(".dock-column.left")?.offsetWidth ?? 260;
+    const right = workspace?.querySelector<HTMLElement>(".dock-column.right")?.offsetWidth ?? 250;
     const timeline = center?.querySelector<HTMLElement>(".timeline-panel")?.offsetHeight ?? 300;
     return { left, right, timeline };
   }
@@ -116,6 +116,70 @@ export default function App() {
     ...(layout.right ? { "--right-w": `${layout.right}px` } : {}),
     ...(layout.timeline ? { "--timeline-h": `${layout.timeline}px` } : {}),
   } as CSSProperties;
+
+  /** Onde fica cada painel (Biblioteca, Propriedades): esquerda ou direita, guardado neste computador. */
+  const [docks, setDocks] = useState<Docks>(() => loadDocks());
+  /** Painel sendo arrastado pelo título: para qual lado e posição ele iria. */
+  const [panelDrag, setPanelDrag] = useState<{ id: PanelId; side: keyof Docks | null; index: number } | null>(null);
+
+  /** Lado e posição (em cima/embaixo) sob o ponteiro, dentro da área de trabalho. */
+  function dockSpotAt(x: number, y: number, id: PanelId): { side: keyof Docks | null; index: number } {
+    const area = workspaceRef.current?.getBoundingClientRect();
+    if (!area) return { side: null, index: 0 };
+    const side: keyof Docks | null = x < area.left + area.width * 0.35 ? "left" : x > area.right - area.width * 0.35 ? "right" : null;
+    if (!side) return { side: null, index: 0 };
+    const others = docks[side].filter((panel) => panel !== id);
+    return { side, index: others.length && y > area.top + area.height / 2 ? others.length : 0 };
+  }
+
+  /** Arrastar um painel pelo título (5 px para começar); soltar à esquerda ou à direita encaixa ali. */
+  function beginPanelDrag(event: ReactPointerEvent<HTMLDivElement>, id: PanelId) {
+    if (event.button !== 0 || (event.target as Element).closest("button, input, select, textarea, a")) return;
+    const startX = event.clientX, startY = event.clientY;
+    let floater: HTMLDivElement | null = null;
+    let spot: { side: keyof Docks | null; index: number } = { side: null, index: 0 };
+    const move = (e: PointerEvent) => {
+      if (!floater && Math.hypot(e.clientX - startX, e.clientY - startY) < 5) return;
+      if (!floater) {
+        floater = document.createElement("div");
+        floater.className = "drag-floater";
+        floater.textContent = id === "library" ? "Biblioteca" : "Propriedades";
+        document.body.appendChild(floater);
+        document.body.classList.add("dragging-media");
+      }
+      floater.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 10}px)`;
+      spot = dockSpotAt(e.clientX, e.clientY, id);
+      setPanelDrag({ id, ...spot });
+    };
+    const stop = (cancelled: boolean) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      if (!floater) return;
+      floater.remove();
+      document.body.classList.remove("dragging-media");
+      setPanelDrag(null);
+      if (cancelled || !spot.side) return;
+      const next = moveDock(docks, id, spot.side, spot.index);
+      if (sameDocks(next, docks)) return;
+      setDocks(next);
+      saveDocks(next);
+    };
+    const up = () => stop(false);
+    const cancel = () => stop(true);
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+  }
+
+  /** Volta os painéis ao lugar e ao tamanho padrão. */
+  function resetPanels() {
+    setDocks(DEFAULT_DOCKS);
+    saveDocks(DEFAULT_DOCKS);
+    setLayout({ left: null, right: null, timeline: null });
+    saveLayout({ left: null, right: null, timeline: null });
+    setNotice("Painéis de volta ao arranjo padrão.");
+  }
 
   /** Depois de arrastar uma legenda: aplicar só nela ou em todas? */
   const [captionMoveChoice, setCaptionMoveChoice] = useState<{ captionId: string; x: number; y: number } | null>(null);
@@ -1303,6 +1367,80 @@ export default function App() {
     {unsavedDialog}
   </>;
 
+  // Painéis encaixáveis (Biblioteca e Propriedades): ficam à esquerda ou à direita do centro.
+  const libraryPanel = (
+    <aside className="media-panel panel">
+      <div className="panel-heading dock-handle" onPointerDown={(event) => beginPanelDrag(event, "library")} title="Arraste pelo título para mudar o painel de lugar">
+        <div><span className="eyebrow">SEU PROJETO</span><h2>Biblioteca</h2></div>
+        <button className="icon-button small" title="Importar mídia do computador" onClick={importMediaFromDisk}><Plus size={18} /></button>
+      </div>
+      <button className="import-drop" onClick={importMediaFromDisk}>
+        <div className="upload-icon"><Import size={20} /></div>
+        <strong>Importar arquivos</strong>
+        <span>Vídeos, imagens e áudios</span>
+        <small>Selecione vários arquivos de uma vez</small>
+      </button>
+      <div className="library-actions">
+        <button className="button secondary compact" onClick={importFolder} title="Importa todos os arquivos de mídia de uma pasta"><FolderInput size={14} /> Importar pasta</button>
+        <button className="button secondary compact" onClick={() => setAssemblyOpen(true)} disabled={!media.length} title="Monta a sequência pelos tempos nos nomes dos arquivos"><WandSparkles size={14} /> Montagem automática</button>
+      </div>
+      <input ref={inputRef} hidden type="file" multiple accept="video/*,image/*,audio/*" onChange={(event) => event.target.files && importFiles(event.target.files)} />
+      <div className="media-stats">
+        <span><Video size={13} /> {mediaCount.video}</span><span><ImageIcon size={13} /> {mediaCount.image}</span><span><Music2 size={13} /> {mediaCount.audio}</span>
+      </div>
+      <div className="asset-list">
+        {media.length === 0 ? <div className="empty-library"><FolderPlus size={25} /><strong>Sua biblioteca está vazia</strong><span>Importe arquivos para começar a montar seu vídeo.</span></div> :
+          media.map((item) => <div key={item.id} className={`asset-row ${selectedId === item.id ? "selected" : ""}`}
+            title={item.missing ? undefined : "Arraste para a timeline para colocar onde quiser"}
+            onPointerDown={(event) => beginLibraryDrag(event, item)}>
+            <button className="asset-main" onClick={() => selectLibraryItem(item)}>
+              <div className="asset-thumb">
+                {item.kind === "image" ? <img src={item.url} /> : item.kind === "video" ? <Video size={18} /> : <AudioLines size={18} />}
+              </div>
+              <div className="asset-info"><strong title={item.name}>{item.name}</strong><span>{item.kind.toUpperCase()} · {formatSize(item.size)}</span></div>
+            </button>
+            <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>{item.kind !== "audio" && <button className="asset-add" title="Sobreposição: no playhead, por cima do vídeo" onClick={() => addAsOverlay(item)}><Layers size={14} /></button>}{item.missing && <button className="asset-add" title="Relinkar arquivo" onClick={() => relinkMedia(item)}><FolderOpen size={14} /></button>}
+            <button className="asset-remove" title="Remover" onClick={() => removeMedia(item)}><X size={14} /></button>
+          </div>)
+        }
+      </div>
+      <div className="panel-foot"><Layers3 size={14} /> {media.length} itens na biblioteca</div>
+    </aside>
+  );
+  const propertiesPanel = (
+    <aside className="properties-panel panel">
+      <div className="panel-heading dock-handle" onPointerDown={(event) => beginPanelDrag(event, "properties")} title="Arraste pelo título para mudar o painel de lugar"><div><span className="eyebrow">AJUSTES</span><h2>Propriedades</h2></div><Settings2 size={17} className="muted-icon" /></div>
+      {selected ? <div className="properties-content">
+        <div className="property-preview">{selected.kind === "image" ? <img src={selected.url} /> : selected.kind === "video" ? <Video size={27} /> : <Music2 size={27} />}</div>
+        <span className="eyebrow">ARQUIVO SELECIONADO</span><h3>{selected.name}</h3>
+        <div className="property-line"><span>Tipo</span><b>{selected.kind}</b></div>
+        <div className="property-line"><span>Tamanho</span><b>{formatSize(selected.size)}</b></div>
+        {selected.duration ? <div className="property-line"><span>Duração</span><b>{formatSeconds(selected.duration)}s</b></div> : null}
+        <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
+        <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
+        {selected.kind !== "audio" && <button className="button secondary full overlay-add" onClick={() => addAsOverlay(selected)}
+          title="Coloca no playhead, numa trilha por cima, menor e centralizada (PNG, GIF, logo, vídeo…)"><Layers size={15} /> Sobreposição no playhead</button>}
+      </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}
+      {selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" && <EffectsPanel clip={selectedClip} locked={isLocked(selectedClip.trackId)}
+        imageClipCount={clips.filter((clip) => mediaOf(clip.mediaId)?.kind === "image").length}
+        onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} onCopyAnimations={copyAnimationsToImages} />}
+      <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
+        onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />
+      <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {
+        const file = event.target.files?.[0];
+        event.target.value = "";
+        if (file) loadCaptionText(await file.text(), file.name);
+      }} />
+      <div className="tools-card"><div className="tools-title"><Sparkles size={15} /> Ferramentas planejadas</div><div className="tool-row"><span>Transições</span><small>Em breve</small></div><div className="tool-row"><span>Correção de cor</span><small>Em breve</small></div><div className="tool-row"><span>Mixagem de áudio</span><small>Em breve</small></div></div>
+    </aside>
+  );
+  const panelOf = (id: PanelId) => id === "library" ? libraryPanel : propertiesPanel;
+  const dockColumn = (side: keyof Docks) => docks[side].length > 0 && <div className={`dock-column ${side}`} data-dock={side}>
+    {docks[side].map((id) => <Fragment key={id}>{panelOf(id)}</Fragment>)}
+  </div>;
+  const gridColumns = [docks.left.length ? "var(--left-w, var(--left-default)) 6px" : "", "minmax(360px, 1fr)",
+    docks.right.length ? "6px var(--right-w, var(--right-default))" : ""].filter(Boolean).join(" ");
+
   return (
     <div className="app-shell">
       <header className="topbar">
@@ -1324,45 +1462,9 @@ export default function App() {
         </div>
       </header>
 
-      <main className="workspace resizable" ref={workspaceRef} style={layoutVars}>
-        <aside className="media-panel panel">
-          <div className="panel-heading">
-            <div><span className="eyebrow">SEU PROJETO</span><h2>Biblioteca</h2></div>
-            <button className="icon-button small" title="Importar mídia do computador" onClick={importMediaFromDisk}><Plus size={18} /></button>
-          </div>
-          <button className="import-drop" onClick={importMediaFromDisk}>
-            <div className="upload-icon"><Import size={20} /></div>
-            <strong>Importar arquivos</strong>
-            <span>Vídeos, imagens e áudios</span>
-            <small>Selecione vários arquivos de uma vez</small>
-          </button>
-          <div className="library-actions">
-            <button className="button secondary compact" onClick={importFolder} title="Importa todos os arquivos de mídia de uma pasta"><FolderInput size={14} /> Importar pasta</button>
-            <button className="button secondary compact" onClick={() => setAssemblyOpen(true)} disabled={!media.length} title="Monta a sequência pelos tempos nos nomes dos arquivos"><WandSparkles size={14} /> Montagem automática</button>
-          </div>
-          <input ref={inputRef} hidden type="file" multiple accept="video/*,image/*,audio/*" onChange={(event) => event.target.files && importFiles(event.target.files)} />
-          <div className="media-stats">
-            <span><Video size={13} /> {mediaCount.video}</span><span><ImageIcon size={13} /> {mediaCount.image}</span><span><Music2 size={13} /> {mediaCount.audio}</span>
-          </div>
-          <div className="asset-list">
-            {media.length === 0 ? <div className="empty-library"><FolderPlus size={25} /><strong>Sua biblioteca está vazia</strong><span>Importe arquivos para começar a montar seu vídeo.</span></div> :
-              media.map((item) => <div key={item.id} className={`asset-row ${selectedId === item.id ? "selected" : ""}`}
-                title={item.missing ? undefined : "Arraste para a timeline para colocar onde quiser"}
-                onPointerDown={(event) => beginLibraryDrag(event, item)}>
-                <button className="asset-main" onClick={() => selectLibraryItem(item)}>
-                  <div className="asset-thumb">
-                    {item.kind === "image" ? <img src={item.url} /> : item.kind === "video" ? <Video size={18} /> : <AudioLines size={18} />}
-                  </div>
-                  <div className="asset-info"><strong title={item.name}>{item.name}</strong><span>{item.kind.toUpperCase()} · {formatSize(item.size)}</span></div>
-                </button>
-                <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>{item.kind !== "audio" && <button className="asset-add" title="Sobreposição: no playhead, por cima do vídeo" onClick={() => addAsOverlay(item)}><Layers size={14} /></button>}{item.missing && <button className="asset-add" title="Relinkar arquivo" onClick={() => relinkMedia(item)}><FolderOpen size={14} /></button>}
-                <button className="asset-remove" title="Remover" onClick={() => removeMedia(item)}><X size={14} /></button>
-              </div>)
-            }
-          </div>
-          <div className="panel-foot"><Layers3 size={14} /> {media.length} itens na biblioteca</div>
-        </aside>
-        <Splitter orientation="vertical" label="Largura da biblioteca" onDrag={(delta) => resizePanel("left", delta)} onEnd={finishResize} onReset={() => resetPanel("left")} />
+      <main className="workspace resizable" ref={workspaceRef} style={{ ...layoutVars, gridTemplateColumns: gridColumns }}>
+        {dockColumn("left")}
+        {docks.left.length > 0 && <Splitter orientation="vertical" label="Largura da coluna da esquerda" onDrag={(delta) => resizePanel("left", delta)} onEnd={finishResize} onReset={() => resetPanel("left")} />}
 
         <section className="center-column" ref={centerRef}>
           <div className="preview-panel panel">
@@ -1448,35 +1550,22 @@ export default function App() {
             onToggleTrack={toggleTrack}
           />
         </section>
-        <Splitter orientation="vertical" label="Largura das propriedades" onDrag={(delta) => resizePanel("right", delta)} onEnd={finishResize} onReset={() => resetPanel("right")} />
+        {docks.right.length > 0 && <Splitter orientation="vertical" label="Largura da coluna da direita" onDrag={(delta) => resizePanel("right", delta)} onEnd={finishResize} onReset={() => resetPanel("right")} />}
 
-        <aside className="properties-panel panel">
-          <div className="panel-heading"><div><span className="eyebrow">AJUSTES</span><h2>Propriedades</h2></div><Settings2 size={17} className="muted-icon" /></div>
-          {selected ? <div className="properties-content">
-            <div className="property-preview">{selected.kind === "image" ? <img src={selected.url} /> : selected.kind === "video" ? <Video size={27} /> : <Music2 size={27} />}</div>
-            <span className="eyebrow">ARQUIVO SELECIONADO</span><h3>{selected.name}</h3>
-            <div className="property-line"><span>Tipo</span><b>{selected.kind}</b></div>
-            <div className="property-line"><span>Tamanho</span><b>{formatSize(selected.size)}</b></div>
-            {selected.duration ? <div className="property-line"><span>Duração</span><b>{formatSeconds(selected.duration)}s</b></div> : null}
-            <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
-            <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
-            {selected.kind !== "audio" && <button className="button secondary full overlay-add" onClick={() => addAsOverlay(selected)}
-              title="Coloca no playhead, numa trilha por cima, menor e centralizada (PNG, GIF, logo, vídeo…)"><Layers size={15} /> Sobreposição no playhead</button>}
-          </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}
-          {selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" && <EffectsPanel clip={selectedClip} locked={isLocked(selectedClip.trackId)}
-            imageClipCount={clips.filter((clip) => mediaOf(clip.mediaId)?.kind === "image").length}
-            onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} onCopyAnimations={copyAnimationsToImages} />}
-          <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
-            onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />
-          <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {
-            const file = event.target.files?.[0];
-            event.target.value = "";
-            if (file) loadCaptionText(await file.text(), file.name);
-          }} />
-          <div className="tools-card"><div className="tools-title"><Sparkles size={15} /> Ferramentas planejadas</div><div className="tool-row"><span>Transições</span><small>Em breve</small></div><div className="tool-row"><span>Correção de cor</span><small>Em breve</small></div><div className="tool-row"><span>Mixagem de áudio</span><small>Em breve</small></div></div>
-        </aside>
+        {dockColumn("right")}
       </main>
-      <footer className="statusbar"><span><i className="status-dot" /> {notice}</span><span>Social Video Editor · v{appVersion} · Projeto local</span></footer>
+      <footer className="statusbar"><span><i className="status-dot" /> {notice}</span><span>
+        {!sameDocks(docks, DEFAULT_DOCKS) || layout.left || layout.right || layout.timeline
+          ? <button className="link-button statusbar-reset" onClick={resetPanels} title="Biblioteca à esquerda, Propriedades à direita, tamanhos padrão">Restaurar painéis</button> : null}
+        Social Video Editor · v{appVersion} · Projeto local</span></footer>
+      {panelDrag && <div className="dock-drop-overlay">
+        {(["left", "right"] as const).map((side) => <div key={side} className={`dock-drop-zone ${side} ${panelDrag.side === side ? "active" : ""}`}
+          style={{ ...(workspaceRef.current ? (() => { const r = workspaceRef.current!.getBoundingClientRect(); return { top: r.top, height: r.height, ...(side === "left" ? { left: r.left } : { left: r.right - r.width * 0.35 }), width: r.width * 0.35 }; })() : {}) }}>
+          <span>{panelDrag.side === side
+            ? `Soltar ${side === "left" ? "à esquerda" : "à direita"}${docks[side].some((id) => id !== panelDrag.id) ? (panelDrag.index === 0 ? " (em cima)" : " (embaixo)") : ""}`
+            : side === "left" ? "Esquerda" : "Direita"}</span>
+        </div>)}
+      </div>}
       {unsavedDialog}
       {filesOver && <div className="files-over-hint">Solte os arquivos: em qualquer lugar entram na biblioteca; numa trilha da timeline, já entram no ponto onde soltar.</div>}
       {exportOpen && <ExportDialog state={timeline} media={media} captionStyle={captionStyle} ratio={ratio} projectName={projectName}

@@ -38,3 +38,37 @@ export function clampSide(which: "left" | "right", value: number, workspaceWidth
 export function clampTimeline(value: number, columnHeight: number) {
   return clamp(value, LIMITS.timeline.min, columnHeight - LIMITS.previewMin - 12);
 }
+
+/** Painéis que podem trocar de lugar (encaixados à esquerda ou à direita do centro). */
+export type PanelId = "library" | "properties";
+export type Docks = { left: PanelId[]; right: PanelId[] };
+
+export const DOCKS_KEY = "sve.docks";
+export const DEFAULT_DOCKS: Docks = { left: ["library"], right: ["properties"] };
+const PANELS: PanelId[] = ["library", "properties"];
+
+/** Arranjo guardado; inválido ou incompleto volta ao padrão (cada painel aparece uma vez). */
+export function loadDocks(storage: Pick<Storage, "getItem"> = localStorage): Docks {
+  try {
+    const saved = JSON.parse(storage.getItem(DOCKS_KEY) ?? "null");
+    const side = (value: unknown) => Array.isArray(value) ? value.filter((id): id is PanelId => PANELS.includes(id)) : [];
+    const docks = { left: side(saved?.left), right: side(saved?.right) };
+    const all = [...docks.left, ...docks.right];
+    return all.length === PANELS.length && new Set(all).size === PANELS.length ? docks : DEFAULT_DOCKS;
+  } catch { return DEFAULT_DOCKS; }
+}
+
+export function saveDocks(docks: Docks, storage: Pick<Storage, "setItem"> = localStorage) {
+  storage.setItem(DOCKS_KEY, JSON.stringify(docks));
+}
+
+/** Move um painel para um lado, na posição `index` (0 = em cima). */
+export function moveDock(docks: Docks, panel: PanelId, side: keyof Docks, index: number): Docks {
+  const left = docks.left.filter((id) => id !== panel);
+  const right = docks.right.filter((id) => id !== panel);
+  const target = side === "left" ? left : right;
+  target.splice(Math.max(0, Math.min(index, target.length)), 0, panel);
+  return { left, right };
+}
+
+export const sameDocks = (a: Docks, b: Docks) => JSON.stringify(a) === JSON.stringify(b);

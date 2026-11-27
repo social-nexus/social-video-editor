@@ -283,3 +283,15 @@ body.dragging-media, body.dragging-media * { cursor: grabbing !important; user-s
 body.resizing-x, body.resizing-x * { cursor: col-resize !important; user-select: none; }
 body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select: none; }
 @media (max-width: 1150px) { .workspace.resizable { grid-template-columns: var(--left-w, 225px) 6px minmax(360px, 1fr) 6px var(--right-w, 215px); } }
+/* Painéis encaixáveis: colunas da esquerda/direita com um ou mais painéis empilhados */
+.workspace.resizable { --left-default: 260px; --right-default: 250px; }
+@media (max-width: 1150px) { .workspace.resizable { --left-default: 225px; --right-default: 215px; } }
+.dock-column { display: flex; flex-direction: column; gap: 12px; min-width: 0; min-height: 0; }
+.dock-column > .panel { flex: 1 1 0; min-height: 0; }
+.dock-handle { cursor: grab; }
+.dock-drop-overlay { position: fixed; inset: 0; z-index: 9990; pointer-events: none; }
+.dock-drop-zone { position: fixed; display: flex; align-items: center; justify-content: center; border: 2px dashed #3f3f4a; border-radius: 12px; background: #0b0b0f55; transition: background .12s, border-color .12s; }
+.dock-drop-zone span { padding: 6px 12px; border-radius: 8px; background: #18181fee; color: #a1a1aa; font-size: 12px; }
+.dock-drop-zone.active { border-color: #f472b6; background: #ec489922; }
+.dock-drop-zone.active span { color: #fce7f3; }
+.statusbar-reset { margin-right: 12px; }
