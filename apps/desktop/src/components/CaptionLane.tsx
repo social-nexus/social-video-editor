@@ -152,10 +152,12 @@ type BarProps = {
   onChange: (id: string, change: Partial<Caption>) => void;
   onRemove: (id: string) => void;
   onNotice: (message: string) => void;
+  /** Legenda com posição própria volta para a do estilo. */
+  onResetPosition?: (id: string) => void;
 };
 
 /** Barra de edição da legenda selecionada: texto, início e fim. */
-export function CaptionEditBar({ caption, onChange, onRemove, onNotice }: BarProps) {
+export function CaptionEditBar({ caption, onChange, onRemove, onNotice, onResetPosition }: BarProps) {
   const [text, setText] = useState(caption.text);
   const [start, setStart] = useState(formatSeconds(caption.start));
   const [end, setEnd] = useState(formatSeconds(caption.end));
@@ -193,6 +195,8 @@ export function CaptionEditBar({ caption, onChange, onRemove, onNotice }: BarPro
     {timeInput("Início", start, setStart, "start")}
     {timeInput("Fim", end, setEnd, "end")}
     <span className="clip-edit-hint">{formatSeconds(roundTime(caption.end - caption.start))}s</span>
+    {caption.x !== undefined && onResetPosition && <button className="button secondary compact" onClick={() => onResetPosition(caption.id)}
+      title="Esta legenda tem posição própria (arrastada). Volta para a posição das outras.">Posição padrão</button>}
     <button className="button secondary compact" onClick={() => onRemove(caption.id)}><X size={12} /> Remover</button>
   </div>;
 }

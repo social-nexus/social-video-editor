@@ -1,34 +1,84 @@
 import { Captions, Download, FileUp, Trash2 } from "lucide-react";
 import type { Caption, CaptionAnimation, CaptionHighlight, CaptionStyle } from "../types";
-import { Fragment } from "react";
-import type { CSSProperties } from "react";
-import { CAPTION_PRESETS, captionAppearance, captionBlocksAt, HIGHLIGHT_SWATCHES, matchingPreset } from "../lib/captionWords";
+import { Fragment, useRef } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
+import { CAPTION_PRESETS, captionAppearance, captionBlocksAt, captionBoxWidth, captionPlacement, HIGHLIGHT_SWATCHES, matchingPreset } from "../lib/captionWords";
 import type { CaptionFormat } from "../lib/captions";
 
 /** Texto da legenda sobre o preview, no instante do playhead (legenda inteira ou palavra por palavra). */
-export function CaptionOverlay({ captions, playhead, style, selectedId, onSelect }: {
+export function CaptionOverlay({ captions, playhead, style, selectedId, onSelect, onMove, onMoveEnd }: {
   captions: Caption[]; playhead: number; style: CaptionStyle; selectedId?: string | null; onSelect?: (captionId: string) => void;
+  /** Arrastando uma legenda no preview: novo centro do bloco (frações do quadro); `gesture` junta o arraste num passo de desfazer. */
+  onMove?: (captionId: string, x: number, y: number, gesture: string) => void;
+  /** Soltou depois de arrastar (para perguntar "só esta" ou "todas"). */
+  onMoveEnd?: (captionId: string, x: number, y: number) => void;
 }) {
+  const drag = useRef<{ id: number; captionId: string; startX: number; startY: number; fromX: number; fromY: number; moved: boolean; gesture: string; x: number; y: number } | null>(null);
   if (!style.visible) return null;
   const blocks = captionBlocksAt(captions, playhead, style);
   if (!blocks.length) return null;
-  const classes = ["caption-overlay", `pos-${style.position}`, style.background ? "boxed" : "", style.outline ? "outlined" : "",
-    style.uppercase ? "upper" : "", style.weight === "black" ? "black" : "", `hl-${style.highlight}`].filter(Boolean).join(" ");
-  const vars = { fontSize: `${style.size}cqh`, "--caption-color": style.textColor, "--caption-highlight": style.highlightColor } as CSSProperties;
-  return <div className={classes} style={vars} aria-live="polite">
-    {blocks.map((block) => {
-      const look = captionAppearance(style.animation, block.appear);
-      return <div key={block.key} className={`caption-line ${onSelect ? "editable" : ""} ${block.captionId === selectedId ? "selected" : ""}`}
-        title={onSelect ? "Clique para editar o texto desta legenda" : undefined}
-        onClick={onSelect ? (event) => { event.stopPropagation(); onSelect(block.captionId); } : undefined}
-        style={look.opacity < 1 || look.scale !== 1 || look.rise ? { opacity: look.opacity, transform: `translateY(${look.rise}em) scale(${look.scale})` } : undefined}>
+  const byId = new Map(captions.map((caption) => [caption.id, caption]));
+  const look = [style.background ? "boxed" : "", style.outline ? "outlined" : "", style.uppercase ? "upper" : "",
+    style.weight === "black" ? "black" : "", `hl-${style.highlight}`].filter(Boolean).join(" ");
+
+  // Clique edita o texto; arrastar (mais de 4 px) move só esta legenda (depois pergunta se vale para todas).
+  function onPointerDown(event: ReactPointerEvent<HTMLDivElement>, captionId: string) {
+    if (!onMove || event.button !== 0) return;
+    const overlay = event.currentTarget.parentElement, frame = overlay?.parentElement;
+    if (!overlay || !frame) return;
+    const box = overlay.getBoundingClientRect(), area = frame.getBoundingClientRect();
+    const fromX = (box.left + box.width / 2 - area.left) / area.width, fromY = (box.top + box.height / 2 - area.top) / area.height;
+    drag.current = { id: event.pointerId, captionId, startX: event.clientX, startY: event.clientY, moved: false,
+      fromX, fromY, x: fromX, y: fromY, gesture: `caption-move:${captionId}:${Date.now()}` };
+    event.currentTarget.setPointerCapture(event.pointerId);
+    event.stopPropagation();
+  }
+  function onPointerMove(event: ReactPointerEvent<HTMLDivElement>) {
+    const current = drag.current, frame = event.currentTarget.parentElement?.parentElement;
+    if (!current || current.id !== event.pointerId || !frame || !onMove) return;
+    const dx = event.clientX - current.startX, dy = event.clientY - current.startY;
+    if (!current.moved && Math.hypot(dx, dy) < 4) return;
+    current.moved = true;
+    const area = frame.getBoundingClientRect();
+    let x = current.fromX + dx / area.width;
+    const y = current.fromY + dy / area.height;
+    if (Math.abs(x - 0.5) < 6 / area.width) x = 0.5; // ímã no centro
+    current.x = Math.round(Math.min(1, Math.max(0, x)) * 1000) / 1000;
+    current.y = Math.round(Math.min(1, Math.max(0, y)) * 1000) / 1000;
+    onMove(current.captionId, current.x, current.y, current.gesture);
+  }
+  function onPointerUp(event: ReactPointerEvent<HTMLDivElement>) {
+    const current = drag.current;
+    drag.current = null;
+    if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
+    if (!current) return;
+    if (current.moved) onMoveEnd?.(current.captionId, current.x, current.y);
+    else onSelect?.(current.captionId);
+  }
+
+  // Cada bloco no seu lugar: a posição própria da legenda ou a do estilo.
+  return <>{blocks.map((block) => {
+    const place = captionPlacement(byId.get(block.captionId), style);
+    const custom = place.position === "custom";
+    const vars = { fontSize: `${style.size}cqh`, "--caption-color": style.textColor, "--caption-highlight": style.highlightColor,
+      ...(custom ? { "--caption-x": `${place.x * 100}%`, "--caption-y": `${place.y * 100}%`, "--caption-w": `${captionBoxWidth(place.x) * 100}%` } : {}) } as CSSProperties;
+    const appear = captionAppearance(style.animation, block.appear);
+    return <div key={block.key} className={`caption-overlay pos-${place.position} ${look}`} style={vars} aria-live="polite">
+      <div className={`caption-line ${onSelect ? "editable" : ""} ${onMove ? "movable" : ""} ${block.captionId === selectedId ? "selected" : ""}`}
+        title={onSelect ? (onMove ? "Clique para editar o texto; arraste para mudar a posição" : "Clique para editar o texto desta legenda") : undefined}
+        onPointerDown={onMove ? (event) => onPointerDown(event, block.captionId) : undefined}
+        onPointerMove={onMove ? onPointerMove : undefined}
+        onPointerUp={onMove ? onPointerUp : undefined}
+        onPointerCancel={onMove ? () => { drag.current = null; } : undefined}
+        onClick={onSelect && !onMove ? (event) => { event.stopPropagation(); onSelect(block.captionId); } : undefined}
+        style={appear.opacity < 1 || appear.scale !== 1 || appear.rise ? { opacity: appear.opacity, transform: `translateY(${appear.rise}em) scale(${appear.scale})` } : undefined}>
         <span className="caption-text">{block.words.map((word, index) => <Fragment key={index}>
           {word.lineBreakBefore ? <br /> : index > 0 ? " " : null}
           <span className={`caption-word ${word.state}`}>{word.text}</span>
         </Fragment>)}</span>
-      </div>;
-    })}
-  </div>;
+      </div>
+    </div>;
+  })}</>;
 }
 
 type Props = {
@@ -66,7 +116,9 @@ export default function CaptionsPanel({ captions, style, onImport, onExport, onS
       <label className="caption-setting"><span>Posição</span>
         <select value={style.position} onChange={(event) => onStyleChange({ position: event.target.value as CaptionStyle["position"] })}>
           <option value="bottom">Embaixo</option><option value="middle">No meio</option><option value="top">Em cima</option>
+          {style.position === "custom" && <option value="custom">Livre (arrastada)</option>}
         </select></label>
+      <small className="caption-hint">Dica: arraste uma legenda no preview para colocá-la em qualquer lugar (só ela ou todas).</small>
       <div className="caption-style-group">
         <div className="tools-title small">Estilo e efeitos</div>
         <label className="caption-setting"><span>Estilo pronto</span>

@@ -87,14 +87,21 @@ export type ClipAudio = Pick<TimelineClip, "volume" | "fadeIn" | "fadeOut">;
 export type ClipGeometry = Pick<TimelineClip, "start" | "duration" | "inPoint">;
 
 /** Uma legenda: texto puro (pode ter quebras de linha) entre `start` e `end`, em segundos da timeline. */
-export type Caption = { id: string; start: number; end: number; text: string };
+export type Caption = {
+  id: string; start: number; end: number; text: string;
+  /** Posição própria (arrastada só esta): centro do bloco em frações do quadro. Ausente = a do estilo. */
+  x?: number; y?: number;
+};
 
 /** Aparência das legendas no preview (e, no futuro, na exportação). */
 export type CaptionStyle = {
   visible: boolean;
   /** Altura da letra em % da altura do vídeo. */
   size: number;
-  position: "bottom" | "middle" | "top";
+  /** "custom" = arrastada no preview: centro do bloco em (x, y), frações do quadro. */
+  position: "bottom" | "middle" | "top" | "custom";
+  x?: number;
+  y?: number;
   background: boolean;
   /** "full" = a legenda inteira; "words" = poucas palavras por vez, no ritmo da fala. */
   mode: CaptionMode;

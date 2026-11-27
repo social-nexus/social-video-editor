@@ -83,3 +83,25 @@ describe("legendas gravadas no vídeo", () => {
     expect(without.filter).not.toContain("ass=");
   });
 });
+
+describe("legenda arrastada (posição livre)", () => {
+  const caption: Caption = { id: "c", start: 0, end: 2, text: "Olá mundo" };
+  it("centro do bloco no ponto arrastado", () => {
+    const ass = buildAssCaptions([caption], { ...DEFAULT_CAPTION_STYLE, position: "custom", x: 0.3, y: 0.4 }, { width: 1080, height: 1920 })!;
+    expect(ass).toMatch(/Style: Main,[^\n]*,5,65,65,0,1/);
+    expect(ass).toContain("{\\an5\\pos(324,768)}");
+  });
+  it("só uma legenda arrastada: as outras ficam no lugar do estilo", () => {
+    const moved: Caption = { id: "m", start: 2, end: 4, text: "Aqui", x: 0.5, y: 0.2 };
+    const ass = buildAssCaptions([caption, moved], DEFAULT_CAPTION_STYLE, { width: 1080, height: 1920 })!;
+    const lines = ass.split("\n").filter((line) => line.startsWith("Dialogue:"));
+    expect(lines[0]).not.toContain("\\pos");
+    expect(lines[0]).toContain(",Main,,0,0,0,,");
+    expect(lines[1]).toContain("{\\an5\\pos(540,384)}");
+    expect(lines[1]).toContain(",Main,,65,65,0,,");
+  });
+  it("subir (rise) parte do ponto arrastado", () => {
+    const ass = buildAssCaptions([caption], { ...DEFAULT_CAPTION_STYLE, position: "custom", x: 0.3, y: 0.4, animation: "rise" }, { width: 1080, height: 1920 })!;
+    expect(ass).toMatch(/\move\(324,[\d.]+,324,768,0,/);
+  });
+});

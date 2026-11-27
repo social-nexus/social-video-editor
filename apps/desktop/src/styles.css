@@ -243,3 +243,16 @@
 .preview-stage { overflow: hidden; }
 .preview-canvas.editing { overflow: visible; }
 .frame-mask { position: absolute; inset: 0; z-index: 1; pointer-events: none; border-radius: 4px; box-shadow: 0 0 0 200vmax rgba(15, 15, 19, .72); outline: 1px solid #ec489966; }
+/* Legenda arrastada no preview: centro do bloco em (--caption-x, --caption-y) */
+.caption-overlay.pos-custom { left: calc(var(--caption-x, 50%) - var(--caption-w, 88%) / 2); right: auto; width: var(--caption-w, 88%); top: var(--caption-y, 75%); transform: translateY(-50%); }
+.caption-line.movable { cursor: move; touch-action: none; user-select: none; }
+.caption-hint { display: block; margin: -2px 0 6px; font-size: 9px; color: #71717a; }
+.caption-move-choice { position: absolute; z-index: 5; transform: translate(-50%, 2.2em); display: flex; align-items: center; gap: 4px; padding: 4px 5px 4px 9px; border-radius: 8px; background: #18181fee; border: 1px solid #3f3f4a; box-shadow: 0 6px 18px #0008; font-size: 10px; color: #a1a1aa; white-space: nowrap; }
+.caption-move-choice button { border: 1px solid #3f3f4a; background: #23232b; color: #f4f4f5; border-radius: 6px; padding: 4px 9px; font-size: 10px; cursor: pointer; }
+.caption-move-choice button.active { background: linear-gradient(135deg, #ec4899, #fb923c); border-color: transparent; }
+.caption-move-choice button:hover { filter: brightness(1.15); }
+/* Escolha após arrastar a legenda: texto em cima, botões embaixo */
+.caption-move-choice { flex-wrap: wrap; justify-content: center; gap: 5px; padding: 6px 7px; text-align: center; width: max-content; max-width: none; }
+.caption-move-choice span { flex-basis: 100%; }
+/* A escolha fica sempre no meio do preview (legenda lá embaixo não esconde os botões) */
+.caption-move-choice { left: 50%; top: 50%; transform: translate(-50%, -50%); }

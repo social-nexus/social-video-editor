@@ -71,6 +71,7 @@ type Props = {
   captionsVisible: boolean;
   onSelectCaption: (id: string | null) => void;
   onUpdateCaption: (id: string, change: Partial<Caption>) => void;
+  onResetCaptionPosition?: (id: string) => void;
   onAddCaption: (at: number) => void;
   onRemoveCaption: (id: string) => void;
   onToggleCaptions: () => void;
@@ -428,7 +429,7 @@ export default function Timeline(props: Props) {
           <button className="button secondary compact" title="Remover clipe da timeline" onClick={() => props.onRemoveClip(selectedClip.id)}><X size={12} /> Remover</button>
         </>}
       </div>}
-      {selectedCaption && <CaptionEditBar caption={selectedCaption} onChange={props.onUpdateCaption} onRemove={props.onRemoveCaption} onNotice={props.onNotice} />}
+      {selectedCaption && <CaptionEditBar caption={selectedCaption} onChange={props.onUpdateCaption} onRemove={props.onRemoveCaption} onNotice={props.onNotice} onResetPosition={props.onResetCaptionPosition} />}
       {selectedClip && selectedHasSound && !selectedLocked && <div className="clip-edit-controls clip-audio-controls">
         <span><Volume2 size={11} /> Som</span>
         <label>Volume <input className="clip-volume-range" type="range" min={0} max={100} step={1} value={Math.round(clipVolume(selectedClip) * 100)}

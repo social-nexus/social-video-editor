@@ -1,5 +1,5 @@
 import type { Caption, CaptionStyle } from "../types";
-import { CAPTION_ANIMATION_TIME, captionAppearance, captionWords, wordGroups, type CaptionWord } from "./captionWords";
+import { CAPTION_ANIMATION_TIME, captionAppearance, captionBoxWidth, captionPlacement, captionWords, wordGroups, type CaptionWord } from "./captionWords";
 
 /**
  * Legendas para gravar no vídeo (formato ASS, desenhado pelo libass do ffmpeg),
@@ -52,10 +52,21 @@ export function buildAssCaptions(captions: Caption[], style: CaptionStyle, { wid
   const black = style.weight === "black";
   const font = black ? CAPTION_FONT_BLACK : CAPTION_FONT;
   const bold = black ? 0 : -1;
-  const align = style.position === "top" ? 8 : style.position === "middle" ? 5 : 2;
-  const marginV = style.position === "top" ? Math.round(height * 0.08) : style.position === "middle" ? 0 : Math.round(height * 0.1);
+  const align = style.position === "top" ? 8 : style.position === "middle" || style.position === "custom" ? 5 : 2;
+  const marginV = style.position === "top" ? Math.round(height * 0.08) : style.position === "middle" || style.position === "custom" ? 0 : Math.round(height * 0.1);
   const marginH = Math.round(width * 0.06);
-  const anchorY = style.position === "top" ? marginV : style.position === "middle" ? height / 2 : height - marginV;
+  /** Onde fica cada legenda (a posição própria dela ou a do estilo). */
+  const placeOf = (caption: Caption) => {
+    const place = captionPlacement(caption, style);
+    const custom = place.position === "custom";
+    return {
+      custom,
+      // Posição livre: a largura da linha acompanha a distância até a borda (margens do próprio evento).
+      margin: custom ? Math.round(width * (1 - captionBoxWidth(place.x)) / 2) : 0,
+      x: custom ? round1(place.x * width) : Math.round(width / 2),
+      y: custom ? round1(place.y * height) : style.position === "top" ? marginV : style.position === "middle" ? height / 2 : height - marginV,
+    };
+  };
   const outline = style.background || !style.outline ? 0 : round1(fontPx * 0.07);
   const shadowY = style.background ? 0 : round1(fontPx * 0.05);
   const text = assColor(style.textColor);
@@ -64,20 +75,24 @@ export function buildAssCaptions(captions: Caption[], style: CaptionStyle, { wid
     `Style: ${name},${font},${fontSize},${primary},${primary},${outlineColor},&H60000000,${bold},0,0,0,100,100,0,0,${borderStyle},${border},0,${align},${marginH},${marginH},${marginV},1`;
 
   const events: string[] = [];
-  const emit = (layer: Layer, start: number, end: number, body: string) => {
+  const emit = (layer: Layer, start: number, end: number, body: string, margin: number) => {
     const index = layer === "box" ? 0 : layer === "hibox" ? 1 : 2;
     const name = layer === "box" ? "Box" : layer === "hibox" ? "HiBox" : "Main";
-    events.push(`Dialogue: ${index},${assTime(start)},${assTime(end)},${name},,0,0,0,,${body}`);
+    events.push(`Dialogue: ${index},${assTime(start)},${assTime(end)},${name},,${margin},${margin},0,,${body}`);
   };
 
   const blocks = captions.flatMap((caption) => {
     const words = captionWords({ ...caption, text: style.uppercase ? caption.text.toLocaleUpperCase("pt-BR") : caption.text });
     if (!words.length) return [];
-    return style.mode === "words" ? wordGroups(words, style.wordsPerGroup).map((group) => group.map((word) => ({ ...word, lineBreakBefore: false })))
-      : [words];
+    const place = placeOf(caption);
+    return (style.mode === "words" ? wordGroups(words, style.wordsPerGroup).map((group) => group.map((word) => ({ ...word, lineBreakBefore: false })))
+      : [words]).map((blockWords) => ({ words: blockWords, place }));
   });
 
-  for (const words of blocks) {
+  for (const { words, place } of blocks) {
+    const anchorX = place.x, anchorY = place.y;
+    // \an5 + \pos: centro do bloco no ponto (vale mesmo se o estilo for "embaixo"/"em cima").
+    const anchorTag = place.custom ? "\\an5" : "";
     const start = words[0].start, end = words[words.length - 1].end;
     const animEnd = start + CAPTION_ANIMATION_TIME;
     const cuts = new Set([start, end]);
@@ -110,8 +125,8 @@ export function buildAssCaptions(captions: Caption[], style: CaptionStyle, { wid
         return `${tags}}`;
       };
       const rise = steps.length && (steps[0].rise || steps[steps.length - 1].rise)
-        ? `{\\move(${Math.round(width / 2)},${round1(anchorY + steps[0].rise * fontPx)},${Math.round(width / 2)},${round1(anchorY + steps[steps.length - 1].rise * fontPx)},0,${steps[steps.length - 1].ms})}`
-        : "";
+        ? `{${anchorTag}\\move(${anchorX},${round1(anchorY + steps[0].rise * fontPx)},${anchorX},${round1(anchorY + steps[steps.length - 1].rise * fontPx)},0,${steps[steps.length - 1].ms})}`
+        : place.custom ? `{\\an5\\pos(${anchorX},${anchorY})}` : "";
 
       const body = (layer: Layer) => {
         let out = rise;
@@ -128,9 +143,9 @@ export function buildAssCaptions(captions: Caption[], style: CaptionStyle, { wid
         return out;
       };
 
-      if (style.background) emit("box", a, b, body("box"));
-      if (style.highlight === "box" && activeIndex >= 0) emit("hibox", a, b, body("hibox"));
-      emit("text", a, b, body("text"));
+      if (style.background) emit("box", a, b, body("box"), place.margin);
+      if (style.highlight === "box" && activeIndex >= 0) emit("hibox", a, b, body("hibox"), place.margin);
+      emit("text", a, b, body("text"), place.margin);
     }
   }
 

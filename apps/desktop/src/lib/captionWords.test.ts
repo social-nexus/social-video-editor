@@ -72,3 +72,11 @@ describe("estilo salvo", () => {
     expect(style.highlight).toBe("box");
   });
 });
+
+describe("posição livre das legendas", () => {
+  it("projeto guarda e valida o ponto", () => {
+    expect(validCaptionStyle({ position: "custom", x: 0.2, y: 1.7 }, DEFAULT_CAPTION_STYLE)).toMatchObject({ position: "custom", x: 0.2, y: 1 });
+    expect(validCaptionStyle({ position: "custom" }, DEFAULT_CAPTION_STYLE)).toMatchObject({ x: 0.5, y: 0.75 });
+    expect(validCaptionStyle({ position: "bottom", x: 0.2 }, DEFAULT_CAPTION_STYLE).x).toBeUndefined();
+  });
+});

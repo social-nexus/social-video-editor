@@ -124,6 +124,25 @@ export const HIGHLIGHT_SWATCHES = ["#facc15", "#ec4899", "#22c55e", "#38bdf8", "
 
 const HEX = /^#[0-9a-f]{6}$/i;
 
+const clampUnit = (value: unknown, fallback: number) => {
+  const number = Number(value);
+  return Number.isFinite(number) ? Math.min(1, Math.max(0, number)) : fallback;
+};
+
+/** Centro do bloco de legenda arrastado (padrão: um pouco abaixo do meio). */
+export const captionCenter = (style: Pick<CaptionStyle, "x" | "y">) => ({ x: style.x ?? 0.5, y: style.y ?? 0.75 });
+
+/** Onde fica uma legenda: a posição própria dela (se tiver) ou a do estilo. */
+export function captionPlacement(caption: Pick<Caption, "x" | "y"> | undefined, style: CaptionStyle):
+  { position: CaptionStyle["position"]; x: number; y: number } {
+  if (caption && Number.isFinite(caption.x) && Number.isFinite(caption.y)) return { position: "custom", x: caption.x!, y: caption.y! };
+  const center = captionCenter(style);
+  return { position: style.position, x: center.x, y: center.y };
+}
+
+/** Largura da caixa de texto (fração do quadro): perto da borda fica mais estreita, para não sair do quadro. */
+export const captionBoxWidth = (x: number) => Math.round(Math.max(0.3, Math.min(0.88, 2 * Math.min(x, 1 - x) - 0.04)) * 1000) / 1000;
+
 /** Estilo salvo no projeto, validado campo a campo (projetos antigos ganham os padrões). */
 export function validCaptionStyle(saved: any, defaults: CaptionStyle): CaptionStyle {
   const value = saved ?? {};
@@ -133,7 +152,8 @@ export function validCaptionStyle(saved: any, defaults: CaptionStyle): CaptionSt
   return {
     visible: value.visible !== false,
     size: Number.isFinite(size) && size >= 2 && size <= 12 ? size : defaults.size,
-    position: pick(value.position, ["bottom", "middle", "top"] as const, defaults.position),
+    position: pick(value.position, ["bottom", "middle", "top", "custom"] as const, defaults.position),
+    ...(value.position === "custom" ? { x: clampUnit(value.x, 0.5), y: clampUnit(value.y, 0.75) } : {}),
     background: Boolean(value.background),
     mode: pick(value.mode, ["full", "words"] as const, defaults.mode),
     wordsPerGroup: Number.isFinite(perGroup) && perGroup >= 1 && perGroup <= 5 ? Math.round(perGroup) : defaults.wordsPerGroup,

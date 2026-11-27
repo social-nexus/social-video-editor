@@ -75,6 +75,8 @@ export default function App() {
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
   const [assemblyOpen, setAssemblyOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  /** Depois de arrastar uma legenda: aplicar só nela ou em todas? */
+  const [captionMoveChoice, setCaptionMoveChoice] = useState<{ captionId: string; x: number; y: number } | null>(null);
   /** Tela inicial ou editor. */
   const [screen, setScreen] = useState<"home" | "editor">("home");
   const [recent, setRecent] = useState<RecentProject[]>(() => loadRecent());
@@ -426,6 +428,33 @@ export default function App() {
       : change.animIn ? `anim-in:${clipId}:${change.animIn.type}`
       : change.animOut ? `anim-out:${clipId}:${change.animOut.type}`
       : change.placement ? `place-field:${clipId}` : undefined);
+  }
+
+  /** Arrastando uma legenda no preview: só ela muda de lugar (um arraste = um passo de desfazer). */
+  function moveCaptionInPreview(captionId: string, x: number, y: number, gesture: string) {
+    setCaptionMoveChoice(null);
+    setPlaying(false);
+    editCaptions((current) => current.map((caption) => caption.id === captionId ? { ...caption, x, y } : caption), gesture);
+  }
+
+  /** "Todas": a posição arrastada vira a do estilo e ninguém fica com posição própria. */
+  function moveAllCaptionsTo() {
+    if (!captionMoveChoice) return;
+    const { x, y } = captionMoveChoice;
+    setCaptionStyle((style) => ({ ...style, position: "custom", x, y }));
+    editCaptions((current) => current.some((caption) => caption.x !== undefined || caption.y !== undefined)
+      ? current.map(({ x: _x, y: _y, ...caption }) => caption) : current);
+    setCaptionMoveChoice(null);
+    setNotice("Todas as legendas foram para a nova posição.");
+  }
+
+  /** Legenda com posição própria volta para a posição do estilo. */
+  function resetCaptionPosition(captionId: string) {
+    editCaptions((current) => current.map((caption) => {
+      if (caption.id !== captionId) return caption;
+      const { x: _x, y: _y, ...rest } = caption;
+      return rest;
+    }));
   }
 
   /** Clique no preview: seleciona o clipe (e pausa, para editar com calma). */
@@ -965,7 +994,9 @@ export default function App() {
         const start = Number(caption?.start), end = Number(caption?.end);
         const text = typeof caption?.text === "string" ? caption.text.trim() : "";
         if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || !text) return [];
-        return [{ id: typeof caption.id === "string" ? caption.id : crypto.randomUUID(), start, end, text }];
+        const x = Number(caption?.x), y = Number(caption?.y);
+        return [{ id: typeof caption.id === "string" ? caption.id : crypto.randomUUID(), start, end, text,
+          ...(Number.isFinite(x) && Number.isFinite(y) ? { x: Math.min(1, Math.max(0, x)), y: Math.min(1, Math.max(0, y)) } : {}) }];
       }));
       setCaptionStyle(validCaptionStyle(data.captionStyle, DEFAULT_CAPTION_STYLE));
       setTimelineNow({ tracks: restoredTracks, clips: restoredClips, captions: restoredCaptions });
@@ -1127,7 +1158,13 @@ export default function App() {
                 {previewMode === "program"
                   ? <><ProgramMonitor media={media} tracks={tracks} clips={clips} playhead={playhead} playing={playing}
                       frameAspect={aspectOf(ratio)} selectedClipId={selectedClipId} onSelectClip={selectClipFromPreview} onPlacement={updatePlacement} />
-                    <CaptionOverlay captions={captions} playhead={playhead} style={captionStyle} selectedId={selectedCaptionId} onSelect={editCaptionFromPreview} /></>
+                    <CaptionOverlay captions={captions} playhead={playhead} style={captionStyle} selectedId={selectedCaptionId} onSelect={editCaptionFromPreview}
+                      onMove={moveCaptionInPreview} onMoveEnd={(captionId, x, y) => setCaptionMoveChoice({ captionId, x, y })} />
+                    {captionMoveChoice && <div className="caption-move-choice" role="dialog" aria-label="Aplicar a nova posição">
+                      <span>Posição nova em:</span>
+                      <button className="active" onClick={() => setCaptionMoveChoice(null)} title="Só esta legenda fica neste lugar">Só esta</button>
+                      <button onClick={moveAllCaptionsTo} title="Todas as legendas passam para este lugar">Todas</button>
+                    </div>}</>
                   : !selected ? <div className="preview-empty"><div className="preview-logo"><MonitorPlay size={31} /></div><strong>Seu vídeo começa aqui</strong><span>Selecione um arquivo na biblioteca para visualizar.</span></div> :
                   selected.kind === "image" ? <img className="preview-media" src={selected.url} /> :
                   selected.kind === "video" ? <video key={selected.id} ref={previewVideoRef} className="preview-media" src={selected.url} controls onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onPlay={() => setPreviewPlaying(true)} onPause={() => setPreviewPlaying(false)} onLoadedMetadata={(event) => setPreviewDuration(event.currentTarget.duration || 0)} onDurationChange={(event) => setPreviewDuration(event.currentTarget.duration || 0)} /> :
@@ -1155,7 +1192,7 @@ export default function App() {
             selectedCaptionId={selectedCaptionId}
             captionsVisible={captionStyle.visible}
             onSelectCaption={selectCaption}
-            onUpdateCaption={updateCaption}
+            onUpdateCaption={updateCaption} onResetCaptionPosition={resetCaptionPosition}
             onAddCaption={addCaptionAt}
             onRemoveCaption={removeCaption}
             onToggleCaptions={() => setCaptionStyle((style) => ({ ...style, visible: !style.visible }))}
