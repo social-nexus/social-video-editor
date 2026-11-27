@@ -43,6 +43,25 @@ pub struct RenderJob {
     output: String,
     /// Arquivos de mídia usados (para nunca sobrescrever um original).
     sources: Vec<String>,
+    /// Legendas em ASS (opcional). O filtro usa {{ASS_FILE}} e {{FONTS_DIR}} no lugar dos caminhos.
+    ass: Option<String>,
+}
+
+/// Caminho dentro de um valor de filtro do ffmpeg entre aspas simples ('C\:/pasta/arquivo').
+fn filter_path_value(path: &Path) -> String {
+    path.to_string_lossy().replace('\\', "/").replace(':', "\\:").replace('\'', "'\\''")
+}
+
+/// Pasta de fontes do sistema para o libass (no Windows o fontconfig do ffmpeg não acha as fontes).
+fn fonts_dir_option() -> String {
+    if cfg!(windows) {
+        let windir = std::env::var("WINDIR").unwrap_or_else(|_| "C:\\Windows".into());
+        let fonts = Path::new(&windir).join("Fonts");
+        if fonts.is_dir() {
+            return format!(":fontsdir='{}'", filter_path_value(&fonts));
+        }
+    }
+    String::new()
 }
 
 #[derive(Clone, serde::Serialize)]
@@ -141,7 +160,13 @@ pub fn start_render(app: tauri::AppHandle, state: State<RenderState>, job: Rende
     // O grafo de filtros vai num arquivo temporário (a linha de comando do Windows tem limite de tamanho).
     let stamp = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_millis()).unwrap_or(0);
     let filter_path = std::env::temp_dir().join(format!("sve-filter-{}-{stamp}.txt", std::process::id()));
-    std::fs::write(&filter_path, &job.filter).map_err(|e| format!("Não foi possível preparar a exportação: {e}"))?;
+    let ass_path = std::env::temp_dir().join(format!("sve-captions-{}-{stamp}.ass", std::process::id()));
+    let mut filter = job.filter.clone();
+    if let Some(ass) = &job.ass {
+        std::fs::write(&ass_path, ass).map_err(|e| format!("Não foi possível preparar as legendas: {e}"))?;
+        filter = filter.replace("{{ASS_FILE}}", &filter_path_value(&ass_path)).replace("{{FONTS_DIR}}", &fonts_dir_option());
+    }
+    std::fs::write(&filter_path, &filter).map_err(|e| format!("Não foi possível preparar a exportação: {e}"))?;
     let filter_arg = filter_path.to_string_lossy().into_owned();
 
     let mut cmd = command(&info.path);
@@ -194,6 +219,7 @@ pub fn start_render(app: tauri::AppHandle, state: State<RenderState>, job: Rende
             }
         };
         let _ = std::fs::remove_file(&filter_path);
+        let _ = std::fs::remove_file(&ass_path);
         let was_cancelled = *cancelled.lock().unwrap();
         let ok = !was_cancelled && status.map(|s| s.success()).unwrap_or(false);
         if !ok { let _ = std::fs::remove_file(&output); }

@@ -44,6 +44,12 @@ fn media_file_info(app: tauri::AppHandle, paths: Vec<String>) -> Vec<MediaFileIn
     }).collect()
 }
 
+/// Diz se cada arquivo existe (projetos recentes que foram movidos ou apagados).
+#[tauri::command]
+fn paths_exist(paths: Vec<String>) -> Vec<bool> {
+    paths.iter().map(|path| Path::new(path).is_file()).collect()
+}
+
 /// Lê um arquivo de texto (ex.: legenda). Se não for UTF-8, lê como Latin-1/Windows-1252.
 #[tauri::command]
 fn read_text_file(path: String) -> Result<String, String> {
@@ -92,7 +98,7 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .manage(render::RenderState::default())
         .invoke_handler(tauri::generate_handler![
-            app_version, save_project_file, read_project_file, media_file_info, list_media_files, read_text_file, write_text_file,
+            app_version, save_project_file, read_project_file, media_file_info, list_media_files, read_text_file, write_text_file, paths_exist,
             render::ffmpeg_info, render::probe_media, render::start_render, render::cancel_render
         ])
         .run(tauri::generate_context!())

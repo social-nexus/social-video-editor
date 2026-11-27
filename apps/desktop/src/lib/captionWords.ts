@@ -54,7 +54,7 @@ export function wordGroups(words: CaptionWord[], size: number): CaptionWord[][] 
 export type WordState = "past" | "active" | "future";
 export type CaptionLineWord = { text: string; state: WordState; lineBreakBefore: boolean };
 /** O que a legenda mostra num instante: blocos de palavras e quanto da animação de entrada já passou. */
-export type CaptionBlock = { key: string; words: CaptionLineWord[]; appear: number };
+export type CaptionBlock = { key: string; captionId: string; words: CaptionLineWord[]; appear: number };
 
 /** Tempo da animação de entrada do bloco, em segundos. */
 export const CAPTION_ANIMATION_TIME = 0.2;
@@ -75,12 +75,14 @@ export function captionBlocksAt(captions: Caption[], time: number, style: Pick<C
       const group = groups[index];
       blocks.push({
         key: `${caption.id}:${index}`,
+        captionId: caption.id,
         words: group.map((word) => ({ text: word.text, state: stateAt(word, time), lineBreakBefore: false })),
         appear: Math.min(1, (time - group[0].start) / CAPTION_ANIMATION_TIME),
       });
     } else {
       blocks.push({
         key: caption.id,
+        captionId: caption.id,
         words: words.map((word) => ({ text: word.text, state: stateAt(word, time), lineBreakBefore: word.lineBreakBefore })),
         appear: Math.min(1, (time - caption.start) / CAPTION_ANIMATION_TIME),
       });
@@ -110,6 +112,15 @@ export const CAPTION_PRESETS: { id: string; label: string; style: Partial<Captio
   { id: "box", label: "Palavra em destaque (caixa)", style: { mode: "words", wordsPerGroup: 3, highlight: "box", highlightColor: "#ec4899", outline: true, background: false, uppercase: true, weight: "black", animation: "rise", textColor: "#ffffff" } },
   { id: "subtitle", label: "Legenda com fundo", style: { mode: "full", highlight: "none", outline: false, background: true, uppercase: false, weight: "bold", animation: "fade", textColor: "#ffffff" } },
 ];
+
+/** Qual estilo pronto corresponde ao estilo atual ("" = personalizado). */
+export function matchingPreset(style: CaptionStyle) {
+  return CAPTION_PRESETS.find((preset) => Object.entries(preset.style)
+    .every(([key, value]) => style[key as keyof CaptionStyle] === value))?.id ?? "";
+}
+
+/** Cores rápidas para o destaque da palavra falada. */
+export const HIGHLIGHT_SWATCHES = ["#facc15", "#ec4899", "#22c55e", "#38bdf8", "#f97316", "#a855f7", "#ef4444", "#ffffff"];
 
 const HEX = /^#[0-9a-f]{6}$/i;
 

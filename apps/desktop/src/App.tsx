@@ -1,8 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
-  AudioLines, Clapperboard, Download, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon,
+  AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon,
   Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
@@ -24,6 +25,9 @@ import Timeline, { type TrackFlag } from "./components/Timeline";
 import ProgramMonitor from "./components/ProgramMonitor";
 import AssemblyDialog from "./components/AssemblyDialog";
 import ExportDialog from "./components/ExportDialog";
+import StartScreen from "./components/StartScreen";
+import UnsavedDialog from "./components/UnsavedDialog";
+import { forgetProject, loadRecent, projectFileName, rememberProject, type RecentProject } from "./lib/recent";
 import type { AssemblyPlan } from "./lib/autoassemble";
 
 type FileInfo = { exists: boolean; size: number };
@@ -68,6 +72,15 @@ export default function App() {
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
   const [assemblyOpen, setAssemblyOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  /** Tela inicial ou editor. */
+  const [screen, setScreen] = useState<"home" | "editor">("home");
+  const [recent, setRecent] = useState<RecentProject[]>(() => loadRecent());
+  /** Pergunta "Salvar / Não salvar / Cancelar" pendente e o que fazer depois. */
+  const [unsaved, setUnsaved] = useState<{ action: string; run: () => void } | null>(null);
+  const [savingBeforeLeave, setSavingBeforeLeave] = useState(false);
+  /** Muda para marcar o estado atual como "salvo" (depois de salvar, abrir ou criar). */
+  const [cleanToken, setCleanToken] = useState(0);
+  const [savedKey, setSavedKey] = useState<string | null>(null);
   const { tracks, clips, captions } = timeline;
 
   // Histórico de edições da timeline (trilhas + clipes). Os refs guardam o valor mais recente
@@ -90,6 +103,17 @@ export default function App() {
   const selected = media.find((item) => item.id === selectedId) ?? null;
   const selectedClip = timeline.clips.find((clip) => clip.id === selectedClipId) ?? null;
   const timelineEnd = timelineEndOf(timeline);
+
+  // Alterações não salvas: compara o que vai para o arquivo (sem durações medidas depois).
+  const projectKey = useMemo(() => JSON.stringify({
+    projectName, ratio, media: media.map(({ id, path, name, kind }) => ({ id, path, name, kind })),
+    tracks: timeline.tracks, clips: timeline.clips, captions: timeline.captions, captionStyle,
+  }), [projectName, ratio, media, timeline, captionStyle]);
+  useEffect(() => { setSavedKey(projectKey); }, [cleanToken]); // eslint-disable-line react-hooks/exhaustive-deps
+  const dirty = screen === "editor" && savedKey !== null && projectKey !== savedKey;
+  const dirtyRef = useRef(dirty);
+  dirtyRef.current = dirty;
+  const markClean = () => setCleanToken((token) => token + 1);
   const mediaCount = useMemo(() => ({
     video: media.filter((item) => item.kind === "video").length,
     image: media.filter((item) => item.kind === "image").length,
@@ -367,6 +391,17 @@ export default function App() {
       }) };
     }, `track-volume:${trackId}`);
     setNotice(`Volume da trilha: ${formatPercent(level)}.`);
+  }
+
+  /** Clique numa legenda do preview: seleciona, pausa e põe o cursor no texto para editar. */
+  function editCaptionFromPreview(captionId: string) {
+    setPlaying(false);
+    setSelectedCaptionId(captionId);
+    setSelectedClipId(null);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const field = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Texto da legenda']");
+      if (field) { field.focus(); field.select(); field.scrollIntoView({ block: "nearest" }); }
+    }));
   }
 
   /** Enquadramento e movimento do clipe. Arrastar a intensidade vira um só passo de desfazer. */
@@ -666,7 +701,7 @@ export default function App() {
 
   // ---- Atalhos de teclado --------------------------------------------------------
   function handleShortcut(event: KeyboardEvent) {
-    if (assemblyOpen || exportOpen) return;
+    if (assemblyOpen || exportOpen || unsaved || screen !== "editor") return;
     const target = event.target;
     if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
     const ctrl = event.ctrlKey || event.metaKey;
@@ -703,9 +738,10 @@ export default function App() {
   }, []);
 
   // ---- Projeto -------------------------------------------------------------------
-  function createProjectSnapshot() {
+  const isUntitled = (name: string) => !name.trim() || name.trim() === "Projeto sem título";
+  function createProjectSnapshot(name = projectName) {
     return {
-      format: "sveproj", schemaVersion: 1, projectName, ratio,
+      format: "sveproj", schemaVersion: 1, projectName: name, ratio,
       media: media.map(({ id, name, kind, size, path, duration }) => ({ id, name, kind, size, path, duration: duration ?? null })),
       tracks, clips, captions, captionStyle, note: "Projeto com caminhos absolutos para mídia. Se arquivos forem movidos, use Relinkar na biblioteca.",
     };
@@ -713,15 +749,26 @@ export default function App() {
 
   async function writeProject(path: string) {
     const projectFilePath = path.toLowerCase().endsWith(".sveproj") ? path : `${path}.sveproj`;
+    // Projeto ainda sem nome: passa a se chamar como o arquivo.
+    const name = isUntitled(projectName) ? projectFileName(projectFilePath) : projectName;
     await invoke("save_project_file", {
       path: projectFilePath,
-      contents: JSON.stringify(createProjectSnapshot(), null, 2),
+      contents: JSON.stringify(createProjectSnapshot(name), null, 2),
     });
+    setProjectName(name);
     setProjectPath(projectFilePath);
     setNotice(`Projeto salvo com sucesso em: ${projectFilePath}`);
+    markClean();
+    remember(projectFilePath, { name });
   }
 
-  async function saveProjectAs() {
+  /** Coloca o projeto atual no topo dos recentes. */
+  function remember(path: string, override: Partial<RecentProject> = {}) {
+    setRecent(rememberProject({ path, name: projectName || projectFileName(path), ratio, openedAt: Date.now(),
+      duration: timelineEnd, clips: clips.length, ...override }));
+  }
+
+  async function saveProjectAs(): Promise<boolean> {
     try {
       const suggestedName = `${projectName.replace(/[^a-z0-9-_]/gi, "_") || "projeto"}.sveproj`;
       const path = await save({
@@ -731,41 +778,100 @@ export default function App() {
       });
       if (!path) {
         setNotice("Salvamento cancelado.");
-        return;
+        return false;
       }
       await writeProject(path);
+      return true;
     } catch (error) {
       setNotice(`Não foi possível salvar o projeto: ${String(error)}`);
+      return false;
     }
   }
 
-  async function saveProject() {
-    if (!projectPath) {
-      await saveProjectAs();
-      return;
-    }
+  async function saveProject(): Promise<boolean> {
+    if (!projectPath) return saveProjectAs();
     try {
       await writeProject(projectPath);
+      return true;
     } catch (error) {
       setNotice(`Não foi possível salvar o projeto: ${String(error)}`);
+      return false;
     }
   }
 
-  async function openProject() {
-    try {
-      const path = await open({
-        multiple: false,
-        title: "Abrir projeto",
-        filters: [{ name: "Projeto Social Video Editor", extensions: ["sveproj"] }],
-      });
-      if (!path || Array.isArray(path)) return;
+  /** Projeto novo e vazio (biblioteca, timeline, legendas e histórico zerados). */
+  function resetProject(nextRatio: string) {
+    setMedia([]);
+    setSelectedId(null);
+    setTimelineNow({ tracks: defaultTracks(), clips: [], captions: [] });
+    applyHistory(emptyHistory());
+    clipboardRef.current = null;
+    setSelectedClipId(null);
+    setSelectedCaptionId(null);
+    setCaptionStyle(DEFAULT_CAPTION_STYLE);
+    setProjectName("Projeto sem título");
+    setProjectPath(null);
+    setRatio(nextRatio);
+    setPlaying(false);
+    setPlayhead(0);
+    setPreviewMode("program");
+    setNotice("Projeto novo. Importe mídias ou use a montagem automática.");
+    markClean();
+  }
 
+  /** Antes de sair do projeto: se houver alterações não salvas, pergunta. */
+  function guardUnsaved(action: string, run: () => void) {
+    if (dirtyRef.current) setUnsaved({ action, run });
+    else run();
+  }
+
+  async function saveThenLeave() {
+    if (!unsaved) return;
+    setSavingBeforeLeave(true);
+    const ok = await saveProject();
+    setSavingBeforeLeave(false);
+    if (!ok) return; // cancelou ou falhou: continua no projeto
+    const { run } = unsaved;
+    setUnsaved(null);
+    run();
+  }
+
+  function goHome() {
+    guardUnsaved("voltar à tela inicial", () => { resetProject(ratio); setScreen("home"); setRecent(loadRecent()); });
+  }
+
+  /** Começa um projeto pela tela inicial (e, se quiser, já importa algo). */
+  function startNewProject(then?: () => void) {
+    resetProject(ratio);
+    setScreen("editor");
+    if (then) setTimeout(then, 0);
+  }
+
+  async function chooseProjectFile() {
+    const path = await open({
+      multiple: false,
+      title: "Abrir projeto",
+      filters: [{ name: "Projeto Social Video Editor", extensions: ["sveproj"] }],
+    });
+    return !path || Array.isArray(path) ? null : path;
+  }
+
+  /** Abrir pelo botão (pede para salvar antes, se preciso). */
+  function openProject() {
+    guardUnsaved("abrir outro projeto", async () => {
+      const path = await chooseProjectFile();
+      if (path) await openProjectAt(path);
+    });
+  }
+
+  async function openProjectAt(path: string): Promise<boolean> {
+    try {
       const contents = await invoke<string>("read_project_file", { path });
       const data = JSON.parse(contents);
       if (data.format !== "sveproj" || data.schemaVersion !== 1) {
         throw new Error("Formato ou versão não reconhecida.");
       }
-      setProjectName(typeof data.projectName === "string" ? data.projectName : "Projeto importado");
+      setProjectName(typeof data.projectName === "string" && !isUntitled(data.projectName) ? data.projectName : projectFileName(path));
       setRatio(typeof data.ratio === "string" ? data.ratio : "9:16");
       const savedMedia: any[] = Array.isArray(data.media) ? data.media : [];
       const mediaPaths: string[] = savedMedia.map((item) => typeof item?.path === "string" ? item.path : "");
@@ -838,10 +944,57 @@ export default function App() {
       void loadMediaDurations(restoredMedia.filter((item) => !item.missing && !item.duration));
       const missingCount = restoredMedia.filter((item) => item.missing).length;
       setNotice(missingCount ? `Projeto aberto, ${missingCount} mídia(s) ausente(s). Use Relinkar.` : "Projeto aberto com biblioteca e timeline restauradas.");
+      markClean();
+      setScreen("editor");
+      const projectRatio = typeof data.ratio === "string" ? data.ratio : "9:16";
+      setRecent(rememberProject({ path, name: typeof data.projectName === "string" && !isUntitled(data.projectName) ? data.projectName : projectFileName(path), ratio: projectRatio,
+        openedAt: Date.now(), duration: timelineEndOf({ clips: restoredClips, captions: restoredCaptions }), clips: restoredClips.length }));
+      return true;
     } catch (error) {
       setNotice(`Não foi possível abrir o projeto: ${String(error)}`);
+      return false;
     }
   }
+
+  /** Projeto recente que mudou de lugar: escolhe o arquivo novo e troca na lista. */
+  async function locateRecent(project: RecentProject) {
+    const path = await chooseProjectFile();
+    if (!path) return;
+    setRecent(forgetProject(project.path));
+    await openProjectAt(path);
+  }
+
+  // Fechar a janela com alterações não salvas: pergunta antes.
+  useEffect(() => {
+    if (!("__TAURI_INTERNALS__" in window)) {
+      const beforeUnload = (event: BeforeUnloadEvent) => { if (dirtyRef.current) event.preventDefault(); };
+      window.addEventListener("beforeunload", beforeUnload);
+      return () => window.removeEventListener("beforeunload", beforeUnload);
+    }
+    const current = getCurrentWindow();
+    const off = current.onCloseRequested((event) => {
+      if (!dirtyRef.current) return;
+      event.preventDefault();
+      setUnsaved({ action: "fechar o editor", run: () => { void current.destroy(); } });
+    });
+    return () => { void off.then((unlisten) => unlisten()); };
+  }, []);
+
+  const unsavedDialog = unsaved && <UnsavedDialog projectName={projectName} action={unsaved.action} saving={savingBeforeLeave}
+    onSave={() => void saveThenLeave()} onDiscard={() => { const { run } = unsaved; setUnsaved(null); run(); }} onCancel={() => setUnsaved(null)} />;
+
+  if (screen === "home") return <>
+    <StartScreen version={appVersion} recent={recent} ratio={ratio} onRatioChange={setRatio}
+      onNew={() => startNewProject()}
+      onAutoAssembly={() => startNewProject(() => void importFolder())}
+      onImportMedia={() => startNewProject(() => void (inTauri() ? importMediaFromDisk() : inputRef.current?.click()))}
+      onOpenDialog={async () => { const path = await chooseProjectFile(); if (path) await openProjectAt(path); }}
+      onOpenRecent={(project) => void openProjectAt(project.path)}
+      onLocate={(project) => void locateRecent(project)}
+      onForget={(project) => setRecent(forgetProject(project.path))} />
+    <div className="start-notice">{notice}</div>
+    {unsavedDialog}
+  </>;
 
   return (
     <div className="app-shell">
@@ -852,12 +1005,13 @@ export default function App() {
         </div>
         <div className="project-title">
           <input aria-label="Nome do projeto" value={projectName} onChange={(event) => setProjectName(event.target.value)} />
-          <span className="saved-dot" title="Projeto local"></span>
+          <span className={`saved-dot ${dirty ? "dirty" : ""}`} title={dirty ? "Alterações não salvas" : "Tudo salvo"}></span>
         </div>
         <div className="top-actions">
+          <button className="button secondary" onClick={goHome} title="Fechar o projeto e voltar à tela inicial"><Home size={16} /> Início</button>
           <button className="button secondary" onClick={openProject}><FolderOpen size={16} /> Abrir</button>
-          <button className="button primary" onClick={saveProject}><Save size={16} /> Salvar</button>
-          <button className="button secondary" onClick={saveProjectAs}>Salvar como</button>
+          <button className="button primary" onClick={() => void saveProject()}><Save size={16} /> Salvar</button>
+          <button className="button secondary" onClick={() => void saveProjectAs()}>Salvar como</button>
           <button className="button primary" disabled={!clips.length} onClick={() => setExportOpen(true)} title="Gerar o vídeo final (MP4)"><Download size={16} /> Exportar</button>
           <button className="icon-button" title="Configurações" onClick={() => setNotice("As configurações serão implementadas nas próximas etapas.")}><Settings2 size={18} /></button>
         </div>
@@ -918,7 +1072,7 @@ export default function App() {
               <div className={`preview-canvas ratio-${ratio.replace(":", "-")}`}>
                 {previewMode === "program"
                   ? <><ProgramMonitor media={media} tracks={tracks} clips={clips} playhead={playhead} playing={playing} />
-                    <CaptionOverlay captions={captions} playhead={playhead} style={captionStyle} /></>
+                    <CaptionOverlay captions={captions} playhead={playhead} style={captionStyle} selectedId={selectedCaptionId} onSelect={editCaptionFromPreview} /></>
                   : !selected ? <div className="preview-empty"><div className="preview-logo"><MonitorPlay size={31} /></div><strong>Seu vídeo começa aqui</strong><span>Selecione um arquivo na biblioteca para visualizar.</span></div> :
                   selected.kind === "image" ? <img className="preview-media" src={selected.url} /> :
                   selected.kind === "video" ? <video key={selected.id} ref={previewVideoRef} className="preview-media" src={selected.url} controls onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onPlay={() => setPreviewPlaying(true)} onPause={() => setPreviewPlaying(false)} onLoadedMetadata={(event) => setPreviewDuration(event.currentTarget.duration || 0)} onDurationChange={(event) => setPreviewDuration(event.currentTarget.duration || 0)} /> :
@@ -1001,7 +1155,8 @@ export default function App() {
         </aside>
       </main>
       <footer className="statusbar"><span><i className="status-dot" /> {notice}</span><span>Social Video Editor · v{appVersion} · Projeto local</span></footer>
-      {exportOpen && <ExportDialog state={timeline} media={media} ratio={ratio} projectName={projectName}
+      {unsavedDialog}
+      {exportOpen && <ExportDialog state={timeline} media={media} captionStyle={captionStyle} ratio={ratio} projectName={projectName}
         onClose={() => setExportOpen(false)} onNotice={setNotice} />}
       {assemblyOpen && <AssemblyDialog media={media} timelineHasClips={clips.length > 0} onClose={() => setAssemblyOpen(false)} onApply={applyAssembly} />}
     </div>

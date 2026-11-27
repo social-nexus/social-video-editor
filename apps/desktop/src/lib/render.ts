@@ -1,7 +1,8 @@
-import type { MediaItem, TimelineClip, TimelineState } from "../types";
+import type { CaptionStyle, MediaItem, TimelineClip, TimelineState } from "../types";
 import { clipEnd, clipSpeed } from "./timeline";
 import { clipVolume, effectiveFades, trackVolume } from "./audio";
 import { clipTransformExpr, motionFilters } from "./renderMotion";
+import { buildAssCaptions } from "./assCaptions";
 
 /** Qualidade da exportação (CRF do x264: menor = melhor e maior). */
 export const QUALITY_PRESETS = [
@@ -44,6 +45,8 @@ export type RenderPlan = {
   sources: string[];
   duration: number;
   warnings: string[];
+  /** Legendas em ASS; o Rust grava o arquivo e troca {{ASS_FILE}} / {{FONTS_DIR}} no filtro. */
+  ass: string | null;
 };
 
 const even = (value: number) => Math.max(2, Math.round(value / 2) * 2);
@@ -88,6 +91,7 @@ function fitFilter(clip: TimelineClip, width: number, height: number) {
  */
 export function buildRenderPlan(
   state: TimelineState, media: MediaItem[], probes: Map<string, ProbeInfo>, settings: RenderSettings, duration: number,
+  captionStyle: CaptionStyle | null = null,
 ): RenderPlan {
   const { width, height, fps } = settings;
   const mediaById = new Map(media.map((item) => [item.id, item]));
@@ -164,6 +168,12 @@ export function buildRenderPlan(
     }
   });
 
+  // Legendas gravadas por cima de tudo (libass).
+  const ass = captionStyle ? buildAssCaptions(state.captions.filter((caption) => caption.start < total), captionStyle, { width, height }) : null;
+  if (ass) {
+    chains.push(`[${current}]ass=filename='{{ASS_FILE}}'{{FONTS_DIR}}[subs]`);
+    current = "subs";
+  }
   chains.push(`[${current}]format=yuv420p[vout]`);
   if (audioLabels.length) {
     // Silêncio até o fim do vídeo, com duração finita (apad sem limite gera tempos inválidos).
@@ -182,7 +192,7 @@ export function buildRenderPlan(
     "-c:v", "libx264", "-preset", settings.preset, "-crf", String(settings.crf), "-pix_fmt", "yuv420p",
     "-r", String(fps), "-t", num(total), "-movflags", "+faststart",
   ];
-  return { inputs, filter: chains.join(";\n"), outputArgs, sources: [...sources], duration: total, warnings };
+  return { inputs, filter: chains.join(";\n"), outputArgs, sources: [...sources], duration: total, warnings, ass };
 }
 
 /** Clipes sem caminho de arquivo (importados só no navegador) não podem ser exportados. */

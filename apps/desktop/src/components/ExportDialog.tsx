@@ -3,7 +3,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import { AlertTriangle, CheckCircle2, Clapperboard, Info, Loader2, X } from "lucide-react";
-import type { MediaItem, TimelineState } from "../types";
+import type { CaptionStyle, MediaItem, TimelineState } from "../types";
 import {
   buildRenderPlan, FRAME_RATES, outputSize, QUALITY_PRESETS, renderDuration, RESOLUTIONS, SPEED_PRESETS,
   type ProbeInfo, type RenderSettings,
@@ -13,6 +13,7 @@ import { formatTimecode } from "../lib/time";
 type Props = {
   state: TimelineState;
   media: MediaItem[];
+  captionStyle: CaptionStyle;
   ratio: string;
   projectName: string;
   onClose: () => void;
@@ -25,8 +26,8 @@ type Phase = { kind: "idle" } | { kind: "rendering"; done: number; startedAt: nu
 
 const SETTINGS_KEY = "sve.export";
 const FFMPEG_KEY = "sve.ffmpegPath";
-type Saved = { resolution: number; fps: number; quality: string; speed: string };
-const DEFAULTS: Saved = { resolution: 1080, fps: 30, quality: "good", speed: "medium" };
+type Saved = { resolution: number; fps: number; quality: string; speed: string; burnCaptions: boolean };
+const DEFAULTS: Saved = { resolution: 1080, fps: 30, quality: "good", speed: "medium", burnCaptions: true };
 
 function loadSaved(): Saved {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") }; } catch { return DEFAULTS; }
@@ -36,7 +37,7 @@ const inTauri = () => "__TAURI_INTERNALS__" in window;
 const safeName = (name: string) => name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "video";
 
 /** Janela de exportação: escolhe qualidade, roda o ffmpeg e mostra o progresso. */
-export default function ExportDialog({ state, media, ratio, projectName, onClose, onNotice }: Props) {
+export default function ExportDialog({ state, media, captionStyle, ratio, projectName, onClose, onNotice }: Props) {
   const [saved, setSaved] = useState<Saved>(loadSaved);
   const [ffmpegPath, setFfmpegPath] = useState(() => localStorage.getItem(FFMPEG_KEY) ?? "");
   const [ffmpeg, setFfmpeg] = useState<FfmpegInfo | null>(null);
@@ -96,8 +97,8 @@ export default function ExportDialog({ state, media, ratio, projectName, onClose
   const preview = useMemo(() => buildRenderPlan(state, media, new Map(), settings, duration),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state, media, duration]);
-  const pending: string[] = [];
-  if (state.captions.length) pending.push("legendas");
+  const hasCaptions = state.captions.length > 0;
+  const captionsForExport = hasCaptions && saved.burnCaptions ? captionStyle : null;
 
   async function chooseFfmpeg() {
     const picked = await open({ multiple: false, directory: false, title: "Escolher o ffmpeg",
@@ -121,10 +122,10 @@ export default function ExportDialog({ state, media, ratio, projectName, onClose
       const paths = [...new Set(state.clips.map((clip) => media.find((item) => item.id === clip.mediaId)?.path).filter((path): path is string => Boolean(path)))];
       const infos = await invoke<ProbeInfo[]>("probe_media", { ffmpeg: ffmpeg.path, paths });
       const probes = new Map(paths.map((path, index) => [path, infos[index]]));
-      const plan = buildRenderPlan(state, media, probes, settings, duration);
+      const plan = buildRenderPlan(state, media, probes, settings, duration, captionsForExport);
       outputRef.current = target;
       setPhase({ kind: "rendering", done: 0, startedAt: Date.now() });
-      await invoke("start_render", { job: { ffmpeg: ffmpeg.path, inputs: plan.inputs, filter: plan.filter, outputArgs: plan.outputArgs, output: target, sources: plan.sources } });
+      await invoke("start_render", { job: { ffmpeg: ffmpeg.path, inputs: plan.inputs, filter: plan.filter, outputArgs: plan.outputArgs, output: target, sources: plan.sources, ass: plan.ass } });
     } catch (error) {
       setPhase({ kind: "error", message: String(error) });
     }
@@ -177,7 +178,11 @@ export default function ExportDialog({ state, media, ratio, projectName, onClose
             <Clapperboard size={13} /> {size.width}×{size.height} · {saved.fps} fps · duração <b>{formatTimecode(duration)}</b> · H.264 + AAC (MP4), codificado no processador
           </p>
           {preview.warnings.map((warning) => <p key={warning} className="export-note warn"><AlertTriangle size={13} /> {warning}</p>)}
-          {pending.length > 0 && <p className="export-note"><Info size={13} /> Ainda não entram no arquivo: {pending.join(" e ")}. Chegam na próxima etapa da exportação.</p>}
+          {hasCaptions && <label className="export-check">
+            <input type="checkbox" checked={saved.burnCaptions} disabled={rendering} onChange={(event) => set({ burnCaptions: event.target.checked })} />
+            Gravar as legendas no vídeo ({state.captions.length}), com o estilo atual
+            {!captionStyle.visible && <span className="export-hint"><Info size={12} /> estão ocultas no preview</span>}
+          </label>}
 
           {phase.kind === "rendering" && <div className="export-progress">
             <div className="export-bar"><div style={{ width: `${progress * 100}%` }} /></div>
