@@ -1,16 +1,29 @@
 import { Captions, Download, FileUp, Trash2 } from "lucide-react";
-import type { Caption, CaptionStyle } from "../types";
-import { captionsAt } from "../lib/captions";
+import type { Caption, CaptionAnimation, CaptionHighlight, CaptionStyle } from "../types";
+import { Fragment } from "react";
+import type { CSSProperties } from "react";
+import { CAPTION_PRESETS, captionAppearance, captionBlocksAt } from "../lib/captionWords";
 import type { CaptionFormat } from "../lib/captions";
 
-/** Texto da legenda sobre o preview, no instante do playhead. */
+/** Texto da legenda sobre o preview, no instante do playhead (legenda inteira ou palavra por palavra). */
 export function CaptionOverlay({ captions, playhead, style }: { captions: Caption[]; playhead: number; style: CaptionStyle }) {
   if (!style.visible) return null;
-  const active = captionsAt(captions, playhead);
-  if (!active.length) return null;
-  return <div className={`caption-overlay pos-${style.position} ${style.background ? "boxed" : ""}`}
-    style={{ fontSize: `${style.size}cqh` }} aria-live="polite">
-    {active.map((caption) => <span key={caption.id}>{caption.text}</span>)}
+  const blocks = captionBlocksAt(captions, playhead, style);
+  if (!blocks.length) return null;
+  const classes = ["caption-overlay", `pos-${style.position}`, style.background ? "boxed" : "", style.outline ? "outlined" : "",
+    style.uppercase ? "upper" : "", style.weight === "black" ? "black" : "", `hl-${style.highlight}`].filter(Boolean).join(" ");
+  const vars = { fontSize: `${style.size}cqh`, "--caption-color": style.textColor, "--caption-highlight": style.highlightColor } as CSSProperties;
+  return <div className={classes} style={vars} aria-live="polite">
+    {blocks.map((block) => {
+      const look = captionAppearance(style.animation, block.appear);
+      return <div key={block.key} className="caption-line"
+        style={look.opacity < 1 || look.scale !== 1 || look.rise ? { opacity: look.opacity, transform: `translateY(${look.rise}em) scale(${look.scale})` } : undefined}>
+        <span className="caption-text">{block.words.map((word, index) => <Fragment key={index}>
+          {word.lineBreakBefore ? <br /> : index > 0 ? " " : null}
+          <span className={`caption-word ${word.state}`}>{word.text}</span>
+        </Fragment>)}</span>
+      </div>;
+    })}
   </div>;
 }
 
@@ -50,6 +63,37 @@ export default function CaptionsPanel({ captions, style, onImport, onExport, onS
         <select value={style.position} onChange={(event) => onStyleChange({ position: event.target.value as CaptionStyle["position"] })}>
           <option value="bottom">Embaixo</option><option value="middle">No meio</option><option value="top">Em cima</option>
         </select></label>
+      <div className="caption-style-group">
+        <div className="tools-title small">Estilo e efeitos</div>
+        <label className="caption-setting"><span>Estilo pronto</span>
+          <select value="" onChange={(event) => { const preset = CAPTION_PRESETS.find((entry) => entry.id === event.target.value); if (preset) onStyleChange(preset.style); }}>
+            <option value="" disabled>Escolher…</option>
+            {CAPTION_PRESETS.map((preset) => <option key={preset.id} value={preset.id}>{preset.label}</option>)}
+          </select></label>
+        <div className="caption-setting"><span>Mostrar</span>
+          <div className="segmented small" role="radiogroup" aria-label="Modo da legenda">
+            <button role="radio" aria-checked={style.mode === "full"} className={style.mode === "full" ? "active" : ""} onClick={() => onStyleChange({ mode: "full" })}>Frase inteira</button>
+            <button role="radio" aria-checked={style.mode === "words"} className={style.mode === "words" ? "active" : ""} onClick={() => onStyleChange({ mode: "words" })}>Palavras</button>
+          </div></div>
+        {style.mode === "words" && <label className="caption-setting"><span>Por vez</span>
+          <input type="range" min={1} max={5} step={1} value={style.wordsPerGroup} aria-label="Palavras por vez" onChange={(event) => onStyleChange({ wordsPerGroup: Number(event.target.value) })} />
+          <b>{style.wordsPerGroup}</b></label>}
+        <label className="caption-setting"><span>Destaque</span>
+          <select value={style.highlight} onChange={(event) => onStyleChange({ highlight: event.target.value as CaptionHighlight })}>
+            <option value="none">Nenhum</option><option value="color">Cor na palavra falada</option><option value="box">Caixa na palavra falada</option>
+          </select>
+          {style.highlight !== "none" && <input type="color" value={style.highlightColor} aria-label="Cor do destaque" onChange={(event) => onStyleChange({ highlightColor: event.target.value })} />}</label>
+        <label className="caption-setting"><span>Cor do texto</span>
+          <input type="color" value={style.textColor} aria-label="Cor do texto" onChange={(event) => onStyleChange({ textColor: event.target.value })} /></label>
+        <label className="caption-setting"><span>Animação</span>
+          <select value={style.animation} onChange={(event) => onStyleChange({ animation: event.target.value as CaptionAnimation })}>
+            <option value="none">Nenhuma</option><option value="pop">Pop</option><option value="fade">Surgir (fade)</option><option value="rise">Subir</option>
+          </select></label>
+        <label className="caption-setting check"><input type="checkbox" checked={style.outline} onChange={(event) => onStyleChange({ outline: event.target.checked })} /> Contorno preto</label>
+        <label className="caption-setting check"><input type="checkbox" checked={style.uppercase} onChange={(event) => onStyleChange({ uppercase: event.target.checked })} /> Tudo em maiúsculas</label>
+        <label className="caption-setting check"><input type="checkbox" checked={style.weight === "black"} onChange={(event) => onStyleChange({ weight: event.target.checked ? "black" : "bold" })} /> Letra extra forte</label>
+        {style.mode === "words" && <p className="captions-hint">O tempo de cada palavra é estimado pelo tamanho dela dentro da legenda.</p>}
+      </div>
       <label className="caption-setting check"><input type="checkbox" checked={style.background} onChange={(event) => onStyleChange({ background: event.target.checked })} /> Fundo escuro atrás do texto</label>
       <label className="caption-setting check"><input type="checkbox" checked={style.visible} onChange={(event) => onStyleChange({ visible: event.target.checked })} /> Mostrar no preview</label>
       <button className="button secondary compact danger" onClick={onClear}><Trash2 size={13} /> Remover todas</button>

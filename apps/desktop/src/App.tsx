@@ -17,6 +17,7 @@ import CaptionsPanel, { CaptionOverlay } from "./components/CaptionsPanel";
 import EffectsPanel, { type ApplyAllOptions, type EffectsChange } from "./components/EffectsPanel";
 import { makeMotion, MOTION_PRESETS, presetForIndex } from "./lib/effects";
 import { validAnimation } from "./lib/animations";
+import { validCaptionStyle } from "./lib/captionWords";
 import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor } from "./lib/tracks";
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline, { type TrackFlag } from "./components/Timeline";
@@ -822,14 +823,7 @@ export default function App() {
         if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || !text) return [];
         return [{ id: typeof caption.id === "string" ? caption.id : crypto.randomUUID(), start, end, text }];
       }));
-      const savedStyle = data.captionStyle ?? {};
-      const size = Number(savedStyle.size);
-      setCaptionStyle({
-        visible: savedStyle.visible !== false,
-        size: Number.isFinite(size) && size >= 2 && size <= 12 ? size : DEFAULT_CAPTION_STYLE.size,
-        position: ["bottom", "middle", "top"].includes(savedStyle.position) ? savedStyle.position : DEFAULT_CAPTION_STYLE.position,
-        background: Boolean(savedStyle.background),
-      });
+      setCaptionStyle(validCaptionStyle(data.captionStyle, DEFAULT_CAPTION_STYLE));
       setTimelineNow({ tracks: restoredTracks, clips: restoredClips, captions: restoredCaptions });
       setSelectedCaptionId(null);
       applyHistory(emptyHistory());

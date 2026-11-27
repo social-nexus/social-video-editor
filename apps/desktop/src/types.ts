@@ -92,9 +92,31 @@ export type CaptionStyle = {
   size: number;
   position: "bottom" | "middle" | "top";
   background: boolean;
+  /** "full" = a legenda inteira; "words" = poucas palavras por vez, no ritmo da fala. */
+  mode: CaptionMode;
+  /** Quantas palavras aparecem juntas no modo "words" (1–5). */
+  wordsPerGroup: number;
+  /** Destaque da palavra que está sendo falada. */
+  highlight: CaptionHighlight;
+  highlightColor: string;
+  textColor: string;
+  /** Contorno preto em volta das letras. */
+  outline: boolean;
+  uppercase: boolean;
+  weight: "bold" | "black";
+  /** Como o bloco de texto aparece. */
+  animation: CaptionAnimation;
 };
 
-export const DEFAULT_CAPTION_STYLE: CaptionStyle = { visible: true, size: 5, position: "bottom", background: false };
+export type CaptionMode = "full" | "words";
+export type CaptionHighlight = "none" | "color" | "box";
+export type CaptionAnimation = "none" | "pop" | "fade" | "rise";
+
+export const DEFAULT_CAPTION_STYLE: CaptionStyle = {
+  visible: true, size: 5, position: "bottom", background: false,
+  mode: "full", wordsPerGroup: 3, highlight: "none", highlightColor: "#facc15", textColor: "#ffffff",
+  outline: true, uppercase: false, weight: "bold", animation: "none",
+};
 
 /** Tudo o que o desfazer/refazer guarda. */
 export type TimelineState = { tracks: Track[]; clips: TimelineClip[]; captions: Caption[] };
