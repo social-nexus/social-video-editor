@@ -22,3 +22,23 @@
 .timeline-ruler{overflow:hidden}
 .edit-controls{display:flex;align-items:center;gap:4px;padding-right:6px;border-right:1px solid #292932}
 .timeline-toolbar{height:auto;min-height:58px;flex-wrap:wrap;gap:6px}.timeline-actions{flex-wrap:wrap;justify-content:flex-end;row-gap:6px}
+.ruler-row{display:flex;position:sticky;top:0;z-index:6;background:#15151b}.ruler-row .timeline-ruler{margin-left:0}
+.ruler-corner{width:104px;flex:none;position:sticky;left:0;z-index:7;background:#15151b;border-bottom:1px solid #30303a}
+.track-label{width:104px;position:sticky;left:0;z-index:5;background:#16161c;gap:2px;padding-right:6px;border-right:1px solid #292932;border-bottom:1px solid #292932}
+.track-label b{font-size:10px;color:#c9c9d1;width:22px;padding-left:4px}.track-label.audio b{color:#8fd8c8}
+.track-label button{border:0;background:transparent;color:#6f6f7b;display:grid;place-items:center;padding:3px;border-radius:4px}.track-label button:hover{color:#fff;background:#24242d}.track-label button.active{color:var(--orange)}
+.track-row.locked .track-lane{background-color:#101014;opacity:.75}.track-row.locked .timeline-clip{cursor:not-allowed}
+.track-row.hidden-track .video-clip{opacity:.45}
+.track-lane.drop-target{box-shadow:inset 0 0 0 1px #ec489988;background-color:#ec48990d}
+.image-clip{background:linear-gradient(100deg,#7a4a2c,#5a3348);border-color:#c98a55}
+.hidden-media{display:none}
+.track-add{display:flex;align-items:center;gap:6px}.track-add button{display:inline-flex;align-items:center;gap:3px;border:1px solid #30303a;background:#1a1a22;color:#c4c4cc;border-radius:5px;font-size:9px;padding:2px 6px}.track-add button:hover{background:#24242d;color:#fff}
+.segmented{display:flex;border:1px solid #30303a;border-radius:7px;overflow:hidden}.segmented button{border:0;background:#17171e;color:#8d8d99;font-size:10px;font-weight:600;padding:5px 10px}.segmented button.active{background:linear-gradient(105deg,#ec489933,#fb923c33);color:#fff}.segmented button:disabled{opacity:.4;cursor:not-allowed}
+.program-empty{text-align:center;padding:12px}
+.timeline-empty{left:128px}
+/* Espaço: a timeline ganha ~metade da coluna central e não quebra a barra do clipe. */
+.preview-panel{min-height:200px}.preview-stage{min-height:110px}
+.timeline-panel{height:auto;flex:0 0 46%;min-height:300px;user-select:none}
+.clip-edit-controls{flex-wrap:nowrap;overflow-x:auto;white-space:nowrap;scrollbar-width:thin}
+.track-row{min-height:42px}.track-lane{min-height:41px}
+@media (max-width:1300px){.zoom-controls input,.ratio-select span,.timeline-toolbar .eyebrow{display:none}.timeline-toolbar{min-height:46px;padding:6px 10px}.timeline-panel{flex-basis:52%}}

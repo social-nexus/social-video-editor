@@ -3,17 +3,22 @@ import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
   AudioLines, Clapperboard, FolderOpen, FolderPlus, Image as ImageIcon,
-  Import, Layers3, Music2, Plus, Save, Settings2, Sparkles,
+  Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
-import type { ClipGeometry, MediaItem, MediaKind, TimelineClip } from "./types";
-import { DEFAULT_IMAGE_DURATION, formatSeconds, roundTime } from "./lib/time";
+import type { ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
+import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
-import { clipEnd, laneEnd, sourceDurationOf, splitClip } from "./lib/timeline";
+import { clipEnd, sourceDurationOf, splitClip } from "./lib/timeline";
+import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor } from "./lib/tracks";
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
-import Timeline from "./components/Timeline";
+import Timeline, { type TrackFlag } from "./components/Timeline";
+import ProgramMonitor from "./components/ProgramMonitor";
 
 type FileInfo = { exists: boolean; size: number };
+type PreviewMode = "program" | "source";
+
+const timelineEndOf = (clips: TimelineClip[]) => clips.reduce((max, clip) => Math.max(max, clipEnd(clip)), 0);
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -21,24 +26,29 @@ export default function App() {
   const [previewTime, setPreviewTime] = useState(0);
   const [previewDuration, setPreviewDuration] = useState(0);
   const [previewPlaying, setPreviewPlaying] = useState(false);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("program");
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [clips, setClips] = useState<TimelineClip[]>([]);
+  const [timeline, setTimeline] = useState<TimelineState>(() => ({ tracks: defaultTracks(), clips: [] }));
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
+  const [playing, setPlaying] = useState(false);
   const [projectName, setProjectName] = useState("Projeto sem título");
   const [projectPath, setProjectPath] = useState<string | null>(null);
   const [ratio, setRatio] = useState("9:16");
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
+  const { tracks, clips } = timeline;
 
-  // Histórico de edições da timeline. Os refs guardam o valor mais recente para que
-  // várias edições no mesmo ciclo (e os atalhos de teclado) não usem estado antigo.
-  const [history, setHistory] = useState<History<TimelineClip[]>>(emptyHistory);
-  const clipsRef = useRef(clips);
-  clipsRef.current = clips;
+  // Histórico de edições da timeline (trilhas + clipes). Os refs guardam o valor mais recente
+  // para que várias edições no mesmo ciclo (e os atalhos de teclado) não usem estado antigo.
+  const [history, setHistory] = useState<History<TimelineState>>(emptyHistory);
+  const timelineRef = useRef(timeline);
+  timelineRef.current = timeline;
   const historyRef = useRef(history);
   historyRef.current = history;
+  const playheadRef = useRef(playhead);
+  playheadRef.current = playhead;
   const clipboardRef = useRef<TimelineClip | null>(null);
 
   useEffect(() => {
@@ -46,11 +56,16 @@ export default function App() {
   }, []);
 
   const selected = media.find((item) => item.id === selectedId) ?? null;
+  const timelineEnd = timelineEndOf(clips);
   const mediaCount = useMemo(() => ({
     video: media.filter((item) => item.kind === "video").length,
     image: media.filter((item) => item.kind === "image").length,
     audio: media.filter((item) => item.kind === "audio").length,
   }), [media]);
+
+  const mediaOf = (mediaId: string) => media.find((item) => item.id === mediaId);
+  const hasSource = (clip: TimelineClip) => sourceDurationOf(mediaOf(clip.mediaId)) !== null;
+  const isLocked = (trackId: string) => Boolean(timelineRef.current.tracks.find((track) => track.id === trackId)?.locked);
 
   // ---- Biblioteca ----------------------------------------------------------------
   /** Importa arquivos vindos de um <input type="file"> (sem caminho no disco). */
@@ -112,18 +127,24 @@ export default function App() {
   function removeMedia(item: MediaItem) {
     if (item.url.startsWith("blob:")) URL.revokeObjectURL(item.url);
     const selectedClip = clips.find((clip) => clip.id === selectedClipId);
-    setMedia((current) => current.filter((entry) => entry.id !== item.id));
     // Tira os clipes dessa mídia da timeline e também do histórico (não há como desfazer para uma mídia removida).
-    const withoutMedia = (list: TimelineClip[]) => list.filter((clip) => clip.mediaId !== item.id);
-    setClipsNow(withoutMedia(clipsRef.current));
+    const withoutMedia = (state: TimelineState): TimelineState => ({ ...state, clips: state.clips.filter((clip) => clip.mediaId !== item.id) });
+    setTimelineNow(withoutMedia(timelineRef.current));
     applyHistory(mapHistory(historyRef.current, withoutMedia));
+    setMedia((current) => current.filter((entry) => entry.id !== item.id));
     if (clipboardRef.current?.mediaId === item.id) clipboardRef.current = null;
     if (selectedId === item.id) setSelectedId(null);
     if (selectedClip?.mediaId === item.id) setSelectedClipId(null);
     setNotice("Arquivo removido da biblioteca e da timeline.");
   }
 
-  // ---- Preview -------------------------------------------------------------------
+  function selectLibraryItem(item: MediaItem) {
+    setSelectedId(item.id);
+    setPlaying(false);
+    setPreviewMode("source");
+  }
+
+  // ---- Preview da mídia (modo "Mídia") --------------------------------------------
   function togglePreviewPlayback() {
     const video = previewVideoRef.current;
     if (!video) { setNotice("Selecione um vídeo para usar os controles de reprodução."); return; }
@@ -138,101 +159,167 @@ export default function App() {
     setPreviewTime(value);
   }
 
-  // ---- Timeline ------------------------------------------------------------------
-  const isAudioMedia = (mediaId: string) => media.find((item) => item.id === mediaId)?.kind === "audio";
+  // ---- Reprodução da timeline (modo "Timeline") -----------------------------------
+  const timelineEndRef = useRef(timelineEnd);
+  timelineEndRef.current = timelineEnd;
+  useEffect(() => {
+    if (!playing) return;
+    let frame = 0;
+    let last = performance.now();
+    const tick = (now: number) => {
+      const next = playheadRef.current + (now - last) / 1000;
+      last = now;
+      if (next >= timelineEndRef.current) {
+        playheadRef.current = roundTime(timelineEndRef.current);
+        setPlayhead(playheadRef.current);
+        setPlaying(false);
+        return;
+      }
+      playheadRef.current = next;
+      setPlayhead(next);
+      frame = requestAnimationFrame(tick);
+    };
+    frame = requestAnimationFrame(tick);
+    return () => cancelAnimationFrame(frame);
+  }, [playing]);
 
-  function selectTimelineClip(clip: TimelineClip | null) {
-    if (!clip) { setSelectedClipId(null); return; }
-    const item = media.find((entry) => entry.id === clip.mediaId);
-    if (!item) return;
-    if (clip.id === selectedClipId) return;
-    setSelectedId(item.id);
-    setSelectedClipId(clip.id);
-    setPreviewTime(0);
-    setNotice(`Preview sincronizado com o clipe: ${item.name}`);
+  function togglePlay() {
+    setPreviewMode("program");
+    previewVideoRef.current?.pause();
+    if (playing) { setPlaying(false); setPlayhead(roundTime(playheadRef.current)); return; }
+    if (!timelineEnd) { setNotice("Adicione clipes à timeline para reproduzir."); return; }
+    if (playheadRef.current >= timelineEnd - 0.05) setPlayhead(0);
+    setPlaying(true);
   }
 
-  function setClipsNow(next: TimelineClip[]) {
-    clipsRef.current = next;
-    setClips(next);
+  function movePlayhead(seconds: number) {
+    setPreviewMode("program");
+    setPlayhead(seconds);
   }
 
-  function applyHistory(next: History<TimelineClip[]>) {
+  // ---- Edição da timeline (com histórico) -----------------------------------------
+  function setTimelineNow(next: TimelineState) {
+    timelineRef.current = next;
+    setTimeline(next);
+  }
+
+  function applyHistory(next: History<TimelineState>) {
     historyRef.current = next;
     setHistory(next);
   }
 
   /** Toda edição da timeline passa por aqui para poder ser desfeita. */
-  function editClips(updater: (current: TimelineClip[]) => TimelineClip[]) {
-    const current = clipsRef.current;
+  function editTimeline(updater: (current: TimelineState) => TimelineState) {
+    const current = timelineRef.current;
     const next = updater(current);
     if (next === current) return;
     applyHistory(record(historyRef.current, current));
-    setClipsNow(next);
+    setTimelineNow(next);
+  }
+
+  function editClips(updater: (current: TimelineClip[]) => TimelineClip[]) {
+    editTimeline((state) => {
+      const next = updater(state.clips);
+      return next === state.clips ? state : { ...state, clips: next };
+    });
   }
 
   function undoEdit() {
-    const result = undo(historyRef.current, clipsRef.current);
+    const result = undo(historyRef.current, timelineRef.current);
     if (!result) { setNotice("Nada para desfazer."); return; }
     applyHistory(result.history);
-    setClipsNow(result.present);
+    setTimelineNow(result.present);
     setNotice("Edição desfeita.");
   }
 
   function redoEdit() {
-    const result = redo(historyRef.current, clipsRef.current);
+    const result = redo(historyRef.current, timelineRef.current);
     if (!result) { setNotice("Nada para refazer."); return; }
     applyHistory(result.history);
-    setClipsNow(result.present);
+    setTimelineNow(result.present);
     setNotice("Edição refeita.");
   }
 
+  function selectTimelineClip(clip: TimelineClip | null) {
+    if (!clip) { setSelectedClipId(null); return; }
+    const item = mediaOf(clip.mediaId);
+    if (!item) return;
+    setSelectedId(item.id);
+    setSelectedClipId(clip.id);
+    setPreviewMode("program");
+  }
+
   function addToTimeline(item: MediaItem) {
+    const track = firstTrackFor(timelineRef.current.tracks, trackKindFor(item.kind));
+    if (!track) { setNotice(`Todas as trilhas de ${item.kind === "audio" ? "áudio" : "vídeo"} estão travadas.`); return; }
     const knownDuration = sourceDurationOf(item);
     const duration = roundTime(knownDuration ?? DEFAULT_IMAGE_DURATION);
-    // Cada trilha (V1 / A1) cresce de forma independente.
-    const toAudioLane = item.kind === "audio";
-    const start = laneEnd(clipsRef.current, (clip) => isAudioMedia(clip.mediaId) === toAudioLane);
+    const start = roundTime(trackEnd(timelineRef.current.clips, track.id));
     const clipId = crypto.randomUUID();
-    editClips((current) => [...current, { id: clipId, mediaId: item.id, start: roundTime(start), duration, inPoint: 0 }]);
+    editClips((current) => [...current, { id: clipId, mediaId: item.id, trackId: track.id, start, duration, inPoint: 0 }]);
     setSelectedClipId(clipId);
+    setPreviewMode("program");
     setNotice(knownDuration
       ? `“${item.name}” foi colocado na timeline com a duração real: ${formatSeconds(duration)}s.`
       : `“${item.name}” foi colocado na timeline. Duração inicial: ${formatSeconds(duration)}s.`);
   }
 
+  /** Muda posição/duração sem sobrescrever (aparas e o campo de duração já respeitam os vizinhos). */
   function updateClip(clipId: string, change: Partial<ClipGeometry>) {
     editClips((current) => {
       const target = current.find((clip) => clip.id === clipId);
-      if (!target) return current;
+      if (!target || isLocked(target.trackId)) return current;
       const merged = { ...target, ...change };
       if (merged.start === target.start && merged.duration === target.duration && merged.inPoint === target.inPoint) return current;
       return current.map((clip) => clip.id === clipId ? merged : clip);
     });
   }
 
+  /** Coloca um clipe em [start, fim) de uma trilha, sobrescrevendo o que estiver embaixo. */
+  function placeClip(current: TimelineClip[], clip: TimelineClip) {
+    const others = current.filter((entry) => entry.id !== clip.id);
+    const cleared = overwriteRange(others, clip.trackId, clip.start, clipEnd(clip), hasSource);
+    const touched = others.filter((entry) => entry.trackId === clip.trackId && entry.start < clipEnd(clip) && clipEnd(entry) > clip.start).length;
+    if (touched) setNotice(`${touched} clipe(s) sobrescrito(s) na trilha. Use Ctrl+Z para desfazer.`);
+    return [...cleared, clip];
+  }
+
+  function moveClip(clipId: string, geometry: ClipGeometry, trackId: string) {
+    editClips((current) => {
+      const target = current.find((clip) => clip.id === clipId);
+      if (!target || isLocked(target.trackId) || isLocked(trackId)) return current;
+      const moved: TimelineClip = { ...target, ...geometry, trackId };
+      if (moved.start === target.start && moved.duration === target.duration && moved.trackId === target.trackId) return current;
+      return placeClip(current, moved);
+    });
+  }
+
   function removeClip(clipId: string) {
+    const clip = timelineRef.current.clips.find((entry) => entry.id === clipId);
+    if (!clip) return;
+    if (isLocked(clip.trackId)) { setNotice("Esta trilha está travada. Destrave para remover o clipe."); return; }
     editClips((current) => current.filter((entry) => entry.id !== clipId));
     if (selectedClipId === clipId) setSelectedClipId(null);
   }
 
-  /** Divide o clipe selecionado no playhead; sem seleção, divide todos os clipes sob o playhead. */
+  /** Divide o clipe selecionado no playhead; sem seleção, divide todos os clipes sob o playhead (exceto em trilhas travadas). */
   function splitAtPlayhead() {
-    const current = clipsRef.current;
+    const current = timelineRef.current.clips;
+    const at = playheadRef.current;
     const selectedClip = current.find((clip) => clip.id === selectedClipId);
-    const candidates = selectedClip ? [selectedClip] : current.filter((clip) => clip.start < playhead && clipEnd(clip) > playhead);
+    const candidates = (selectedClip ? [selectedClip] : current.filter((clip) => clip.start < at && clipEnd(clip) > at))
+      .filter((clip) => !isLocked(clip.trackId));
     const targets = new Set(candidates.map((clip) => clip.id));
     let splits = 0;
     const next = current.flatMap((clip) => {
       if (!targets.has(clip.id)) return [clip];
-      const hasSource = sourceDurationOf(media.find((item) => item.id === clip.mediaId)) !== null;
-      const parts = splitClip(clip, playhead, crypto.randomUUID(), hasSource);
+      const parts = splitClip(clip, at, crypto.randomUUID(), hasSource(clip));
       if (!parts) return [clip];
       splits++;
       return parts;
     });
     if (!splits) {
-      setNotice(selectedClip ? "Posicione o playhead dentro do clipe selecionado para dividir." : "Não há clipe sob o playhead para dividir.");
+      setNotice(selectedClip ? "Posicione o playhead dentro do clipe selecionado (e destravado) para dividir." : "Não há clipe sob o playhead para dividir.");
       return;
     }
     editClips(() => next);
@@ -241,41 +328,67 @@ export default function App() {
 
   /** Cria uma cópia do clipe selecionado no fim da trilha dele. */
   function duplicateSelected() {
-    const clip = clipsRef.current.find((entry) => entry.id === selectedClipId);
+    const clip = timelineRef.current.clips.find((entry) => entry.id === selectedClipId);
     if (!clip) { setNotice("Selecione um clipe para duplicar."); return; }
-    const audio = isAudioMedia(clip.mediaId);
-    const start = laneEnd(clipsRef.current, (entry) => isAudioMedia(entry.mediaId) === audio);
-    const copy: TimelineClip = { ...clip, id: crypto.randomUUID(), start: roundTime(start) };
+    if (isLocked(clip.trackId)) { setNotice("Esta trilha está travada."); return; }
+    const copy: TimelineClip = { ...clip, id: crypto.randomUUID(), start: roundTime(trackEnd(timelineRef.current.clips, clip.trackId)) };
     editClips((current) => [...current, copy]);
     setSelectedClipId(copy.id);
     setNotice("Clipe duplicado no fim da trilha.");
   }
 
   function copySelected() {
-    const clip = clipsRef.current.find((entry) => entry.id === selectedClipId);
+    const clip = timelineRef.current.clips.find((entry) => entry.id === selectedClipId);
     if (!clip) { setNotice("Selecione um clipe para copiar."); return; }
     clipboardRef.current = clip;
     setNotice("Clipe copiado. Use Ctrl+V para colar no playhead.");
   }
 
+  /** Cola no playhead, na trilha original (ou na primeira compatível), sobrescrevendo o que houver ali. */
   function pasteAtPlayhead() {
     const clip = clipboardRef.current;
-    if (!clip || !media.some((item) => item.id === clip.mediaId)) { setNotice("Nada para colar."); return; }
-    const copy: TimelineClip = { ...clip, id: crypto.randomUUID(), start: roundTime(playhead) };
-    editClips((current) => [...current, copy]);
+    const item = clip ? mediaOf(clip.mediaId) : undefined;
+    if (!clip || !item) { setNotice("Nada para colar."); return; }
+    const { tracks: currentTracks } = timelineRef.current;
+    const original = currentTracks.find((track) => track.id === clip.trackId && !track.locked);
+    const track = original ?? firstTrackFor(currentTracks, trackKindFor(item.kind));
+    if (!track) { setNotice("Não há trilha destravada para colar."); return; }
+    const copy: TimelineClip = { ...clip, id: crypto.randomUUID(), trackId: track.id, start: roundTime(playheadRef.current) };
+    editClips((current) => placeClip(current, copy));
     setSelectedClipId(copy.id);
-    setNotice("Clipe colado no playhead.");
   }
 
   function nudgeSelected(delta: number) {
-    const clip = clipsRef.current.find((entry) => entry.id === selectedClipId);
-    if (clip) updateClip(clip.id, { start: roundTime(Math.max(0, clip.start + delta)) });
+    const clip = timelineRef.current.clips.find((entry) => entry.id === selectedClipId);
+    if (!clip) return;
+    const { minStart, maxEnd } = freeBounds(clip, timelineRef.current.clips);
+    const start = Math.min(Math.max(clip.start + delta, minStart), maxEnd - clip.duration);
+    updateClip(clip.id, { start: roundTime(Math.max(0, start)) });
+  }
+
+  // ---- Trilhas -------------------------------------------------------------------
+  function addTrack(kind: TrackKind) {
+    editTimeline((state) => ({ ...state, tracks: [...state.tracks, newTrack(kind)] }));
+    setNotice(`Trilha de ${kind === "video" ? "vídeo" : "áudio"} adicionada.`);
+  }
+
+  function removeTrack(trackId: string) {
+    editTimeline((state) => {
+      const track = state.tracks.find((entry) => entry.id === trackId);
+      const sameKind = state.tracks.filter((entry) => entry.kind === track?.kind).length;
+      if (!track || sameKind <= 1 || state.clips.some((clip) => clip.trackId === trackId)) return state;
+      return { ...state, tracks: state.tracks.filter((entry) => entry.id !== trackId) };
+    });
+  }
+
+  function toggleTrack(trackId: string, flag: TrackFlag) {
+    editTimeline((state) => ({ ...state, tracks: state.tracks.map((track) => track.id === trackId ? { ...track, [flag]: !track[flag] } : track) }));
   }
 
   // ---- Atalhos de teclado --------------------------------------------------------
   function handleShortcut(event: KeyboardEvent) {
-    const target = event.target as HTMLElement | null;
-    if (target?.closest("input, textarea, select, [contenteditable='true']")) return;
+    const target = event.target;
+    if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
     const ctrl = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     const step = event.shiftKey ? 1 : 0.1;
@@ -286,14 +399,15 @@ export default function App() {
     else if (ctrl && key === "c") copySelected();
     else if (ctrl && key === "v") pasteAtPlayhead();
     else if (ctrl) return;
+    else if (key === " ") togglePlay();
     else if (key === "delete" || key === "backspace") { if (selectedClipId) removeClip(selectedClipId); }
     else if (key === "s") splitAtPlayhead();
     else if (key === "arrowleft" && event.altKey) nudgeSelected(-step);
     else if (key === "arrowright" && event.altKey) nudgeSelected(step);
-    else if (key === "arrowleft") setPlayhead((value) => roundTime(Math.max(0, value - step)));
-    else if (key === "arrowright") setPlayhead((value) => roundTime(value + step));
-    else if (key === "home") setPlayhead(0);
-    else if (key === "end") setPlayhead(roundTime(clipsRef.current.reduce((max, clip) => Math.max(max, clipEnd(clip)), 0)));
+    else if (key === "arrowleft") movePlayhead(roundTime(Math.max(0, playheadRef.current - step)));
+    else if (key === "arrowright") movePlayhead(roundTime(playheadRef.current + step));
+    else if (key === "home") movePlayhead(0);
+    else if (key === "end") movePlayhead(roundTime(timelineEndOf(timelineRef.current.clips)));
     else if (key === "escape") setSelectedClipId(null);
     else return;
     event.preventDefault();
@@ -313,7 +427,7 @@ export default function App() {
     return {
       format: "sveproj", schemaVersion: 1, projectName, ratio,
       media: media.map(({ id, name, kind, size, path, duration }) => ({ id, name, kind, size, path, duration: duration ?? null })),
-      clips, note: "Projeto com caminhos absolutos para mídia. Se arquivos forem movidos, use Relinkar na biblioteca.",
+      tracks, clips, note: "Projeto com caminhos absolutos para mídia. Se arquivos forem movidos, use Relinkar na biblioteca.",
     };
   }
 
@@ -386,22 +500,37 @@ export default function App() {
           kind: validKinds.includes(item?.kind) ? item.kind : "other", size: fileInfos[index]?.size ?? Number(item?.size ?? 0), missing: !exists,
           duration: Number.isFinite(savedDuration) && savedDuration > 0 ? savedDuration : null };
       }).filter((item) => item.kind !== "other");
-      // Só restaura clipes bem formados que apontam para mídia da biblioteca.
-      const mediaIds = new Set(restoredMedia.map((item) => item.id));
+
+      // Trilhas: projetos antigos não têm; garante pelo menos uma de vídeo e uma de áudio.
+      const savedTracks: any[] = Array.isArray(data.tracks) ? data.tracks : [];
+      const restoredTracks: Track[] = savedTracks
+        .filter((track) => typeof track?.id === "string" && (track.kind === "video" || track.kind === "audio"))
+        .map((track) => ({ id: track.id, kind: track.kind, hidden: Boolean(track.hidden), muted: Boolean(track.muted), locked: Boolean(track.locked) }));
+      if (!restoredTracks.some((track) => track.kind === "video")) restoredTracks.unshift(newTrack("video"));
+      if (!restoredTracks.some((track) => track.kind === "audio")) restoredTracks.push(newTrack("audio"));
+
+      // Só restaura clipes bem formados que apontam para mídia da biblioteca; trilha ausente ou incompatível → primeira compatível.
+      const mediaById = new Map(restoredMedia.map((item) => [item.id, item]));
       const savedClips: any[] = Array.isArray(data.clips) ? data.clips : [];
       const restoredClips = savedClips.flatMap((clip): TimelineClip[] => {
         const start = Number(clip?.start), duration = Number(clip?.duration), inPoint = Number(clip?.inPoint ?? 0);
-        if (typeof clip?.mediaId !== "string" || !mediaIds.has(clip.mediaId) || !Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0) return [];
-        return [{ id: typeof clip.id === "string" ? clip.id : crypto.randomUUID(), mediaId: clip.mediaId,
+        const item = typeof clip?.mediaId === "string" ? mediaById.get(clip.mediaId) : undefined;
+        if (!item || !Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0) return [];
+        const kind = trackKindFor(item.kind);
+        const track = restoredTracks.find((entry) => entry.id === clip.trackId && entry.kind === kind)
+          ?? restoredTracks.find((entry) => entry.kind === kind)!;
+        return [{ id: typeof clip.id === "string" ? clip.id : crypto.randomUUID(), mediaId: item.id, trackId: track.id,
           start: Math.max(0, start), duration, inPoint: Number.isFinite(inPoint) ? Math.max(0, inPoint) : 0 }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
-      setClipsNow(restoredClips);
+      setTimelineNow({ tracks: restoredTracks, clips: restoredClips });
       applyHistory(emptyHistory());
       clipboardRef.current = null;
       setSelectedClipId(null);
+      setPlaying(false);
       setPlayhead(0);
+      setPreviewMode("program");
       setProjectPath(path);
       void loadMediaDurations(restoredMedia.filter((item) => !item.missing && !item.duration));
       const missingCount = restoredMedia.filter((item) => item.missing).length;
@@ -449,7 +578,7 @@ export default function App() {
           <div className="asset-list">
             {media.length === 0 ? <div className="empty-library"><FolderPlus size={25} /><strong>Sua biblioteca está vazia</strong><span>Importe arquivos para começar a montar seu vídeo.</span></div> :
               media.map((item) => <div key={item.id} className={`asset-row ${selectedId === item.id ? "selected" : ""}`}>
-                <button className="asset-main" onClick={() => { setSelectedId(item.id); }}>
+                <button className="asset-main" onClick={() => selectLibraryItem(item)}>
                   <div className="asset-thumb">
                     {item.kind === "image" ? <img src={item.url} /> : item.kind === "video" ? <Video size={18} /> : <AudioLines size={18} />}
                   </div>
@@ -467,40 +596,64 @@ export default function App() {
           <div className="preview-panel panel">
             <div className="panel-heading preview-heading">
               <div><span className="eyebrow">MONITOR DE VÍDEO</span><h2>Pré-visualização</h2></div>
-              <div className="preview-tools"><span className="live-indicator">LOCAL</span><button className="icon-button small" title="Ajustes do preview" onClick={() => setNotice("Ajustes de preview serão adicionados.")}><Settings2 size={16} /></button></div>
+              <div className="preview-tools">
+                <div className="segmented" role="tablist" aria-label="O que o preview mostra">
+                  <button role="tab" aria-selected={previewMode === "program"} className={previewMode === "program" ? "active" : ""}
+                    onClick={() => setPreviewMode("program")} title="Mostra a montagem da timeline no playhead">Timeline</button>
+                  <button role="tab" aria-selected={previewMode === "source"} className={previewMode === "source" ? "active" : ""}
+                    onClick={() => { setPlaying(false); setPreviewMode("source"); }} disabled={!selected} title="Mostra a mídia selecionada na biblioteca">Mídia</button>
+                </div>
+                <button className="icon-button small" title="Ajustes do preview" onClick={() => setNotice("Ajustes de preview serão adicionados.")}><Settings2 size={16} /></button>
+              </div>
             </div>
             <div className="preview-stage">
               <div className={`preview-canvas ratio-${ratio.replace(":", "-")}`}>
-                {!selected ? <div className="preview-empty"><div className="preview-logo"><MonitorPlay size={31} /></div><strong>Seu vídeo começa aqui</strong><span>Selecione um arquivo na biblioteca para visualizar.</span></div> :
+                {previewMode === "program"
+                  ? <ProgramMonitor media={media} tracks={tracks} clips={clips} playhead={playhead} playing={playing} />
+                  : !selected ? <div className="preview-empty"><div className="preview-logo"><MonitorPlay size={31} /></div><strong>Seu vídeo começa aqui</strong><span>Selecione um arquivo na biblioteca para visualizar.</span></div> :
                   selected.kind === "image" ? <img className="preview-media" src={selected.url} /> :
                   selected.kind === "video" ? <video key={selected.id} ref={previewVideoRef} className="preview-media" src={selected.url} controls onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onPlay={() => setPreviewPlaying(true)} onPause={() => setPreviewPlaying(false)} onLoadedMetadata={(event) => setPreviewDuration(event.currentTarget.duration || 0)} onDurationChange={(event) => setPreviewDuration(event.currentTarget.duration || 0)} /> :
                   <div className="audio-preview"><AudioLines size={44} /><strong>{selected.name}</strong><audio src={selected.url} controls /></div>}
               </div>
             </div>
-            <div className="preview-transport"><button className="button secondary compact" onClick={togglePreviewPlayback} disabled={selected?.kind !== "video"}>{previewPlaying ? "⏸ Pausar" : "▶ Reproduzir"}</button><span className="preview-time">{previewTime.toFixed(1)}s / {previewDuration.toFixed(1)}s</span><input aria-label="Posição do vídeo" type="range" min={0} max={Math.max(0, previewDuration)} step={0.1} value={Math.min(previewTime, previewDuration)} onChange={(event) => seekPreview(Number(event.target.value))} disabled={selected?.kind !== "video" || !previewDuration} /></div>
-            <div className="preview-bottom"><span>{selected ? selected.name : "Nenhuma mídia selecionada"}</span><span>Proporção <b>{ratio}</b></span></div>
+            {previewMode === "program"
+              ? <div className="preview-transport">
+                  <button className="button secondary compact" onClick={togglePlay} disabled={!timelineEnd} title="Reproduzir / pausar (Espaço)">
+                    {playing ? <><Pause size={13} /> Pausar</> : <><Play size={13} /> Reproduzir</>}
+                  </button>
+                  <span className="preview-time">{formatTimecode(playhead)} / {formatTimecode(timelineEnd)}</span>
+                  <input aria-label="Posição na timeline" type="range" min={0} max={Math.max(0, timelineEnd)} step={0.01} value={Math.min(playhead, timelineEnd)}
+                    onChange={(event) => movePlayhead(Number(event.target.value))} disabled={!timelineEnd} />
+                </div>
+              : <div className="preview-transport"><button className="button secondary compact" onClick={togglePreviewPlayback} disabled={selected?.kind !== "video"}>{previewPlaying ? "⏸ Pausar" : "▶ Reproduzir"}</button><span className="preview-time">{previewTime.toFixed(1)}s / {previewDuration.toFixed(1)}s</span><input aria-label="Posição do vídeo" type="range" min={0} max={Math.max(0, previewDuration)} step={0.1} value={Math.min(previewTime, previewDuration)} onChange={(event) => seekPreview(Number(event.target.value))} disabled={selected?.kind !== "video" || !previewDuration} /></div>}
+            <div className="preview-bottom"><span>{previewMode === "program" ? "Montagem da timeline" : selected ? selected.name : "Nenhuma mídia selecionada"}</span><span>Proporção <b>{ratio}</b></span></div>
           </div>
 
           <Timeline
             media={media}
+            tracks={tracks}
             clips={clips}
             selectedClipId={selectedClipId}
             playhead={playhead}
             ratio={ratio}
             canAddClip={Boolean(selected)}
-            onRatioChange={setRatio}
-            onAddClip={() => selected && addToTimeline(selected)}
-            onSelectClip={selectTimelineClip}
-            onUpdateClip={updateClip}
-            onRemoveClip={removeClip}
-            onPlayheadChange={setPlayhead}
             canUndo={history.past.length > 0}
             canRedo={history.future.length > 0}
             onUndo={undoEdit}
             onRedo={redoEdit}
             onSplit={splitAtPlayhead}
             onDuplicate={duplicateSelected}
+            onRatioChange={setRatio}
+            onAddClip={() => selected && addToTimeline(selected)}
+            onSelectClip={selectTimelineClip}
+            onUpdateClip={updateClip}
+            onMoveClip={moveClip}
+            onRemoveClip={removeClip}
+            onPlayheadChange={movePlayhead}
             onNotice={setNotice}
+            onAddTrack={addTrack}
+            onRemoveTrack={removeTrack}
+            onToggleTrack={toggleTrack}
           />
         </section>
 

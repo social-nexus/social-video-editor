@@ -32,11 +32,11 @@ describe("histórico", () => {
 });
 
 describe("splitClip", () => {
-  const clip = { id: "a", mediaId: "m", start: 2, duration: 4.458, inPoint: 0.5 };
+  const clip = { id: "a", mediaId: "m", trackId: "v", start: 2, duration: 4.458, inPoint: 0.5 };
   it("divide um vídeo e avança o ponto de entrada da segunda parte", () => {
     expect(splitClip(clip, 3.5, "b", true)).toEqual([
       { ...clip, duration: 1.5 },
-      { id: "b", mediaId: "m", start: 3.5, duration: 2.958, inPoint: 2 },
+      { id: "b", mediaId: "m", trackId: "v", start: 3.5, duration: 2.958, inPoint: 2 },
     ]);
   });
   it("imagem não tem ponto de entrada", () => {

@@ -1,15 +1,19 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
-import { AudioLines, ChevronDown, Copy, Film, Maximize2, Music2, Plus, Redo2, Scissors, SquareSplitHorizontal, Undo2, Video, X, ZoomIn, ZoomOut } from "lucide-react";
-import type { ClipGeometry, MediaItem, TimelineClip } from "../types";
+import {
+  AudioLines, ChevronDown, Copy, Eye, EyeOff, Film, Lock, LockOpen, Maximize2, Plus, Redo2, Scissors,
+  SquareSplitHorizontal, Trash2, Undo2, Volume2, VolumeX, X, ZoomIn, ZoomOut,
+} from "lucide-react";
+import type { ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
 import { formatSeconds, formatTimecode, parseSeconds, roundTime } from "../lib/time";
 import {
   applyClipDrag, clampClipDuration, clipEnd, maxClipDuration, rulerStep, snapTargetsFor, sourceDurationOf,
   type DragMode,
 } from "../lib/timeline";
+import { freeBounds, trackKindFor, trackLabel } from "../lib/tracks";
 
-const TRACK_LABEL_PX = 46;
-/** Distância, no conteúdo rolável, entre a borda esquerda e o instante 0 (padding + rótulo da trilha). */
+const TRACK_LABEL_PX = 104;
+/** Distância, no conteúdo rolável, entre a borda esquerda e o instante 0 (padding + cabeçalho da trilha). */
 const LANE_X = 12 + TRACK_LABEL_PX;
 const NARROW_CLIP_PX = 48;
 const SNAP_PX = 8;
@@ -25,34 +29,47 @@ type DragState = {
   moved: boolean;
   original: ClipGeometry;
   preview: ClipGeometry;
+  /** Trilha onde o clipe está sendo arrastado (muda ao mover para cima/baixo). */
+  trackId: string;
+  trackKind: TrackKind;
   sourceDuration: number | null;
   snapTargets: number[];
+  minStart: number;
+  maxEnd: number;
 };
+
+export type TrackFlag = "hidden" | "muted" | "locked";
 
 type Props = {
   media: MediaItem[];
+  tracks: Track[];
   clips: TimelineClip[];
   selectedClipId: string | null;
   playhead: number;
   ratio: string;
   canAddClip: boolean;
-  onRatioChange: (ratio: string) => void;
-  onAddClip: () => void;
-  onSelectClip: (clip: TimelineClip | null) => void;
-  onUpdateClip: (clipId: string, change: Partial<ClipGeometry>) => void;
-  onRemoveClip: (clipId: string) => void;
-  onPlayheadChange: (seconds: number) => void;
-  onNotice: (message: string) => void;
   canUndo: boolean;
   canRedo: boolean;
   onUndo: () => void;
   onRedo: () => void;
   onSplit: () => void;
   onDuplicate: () => void;
+  onRatioChange: (ratio: string) => void;
+  onAddClip: () => void;
+  onSelectClip: (clip: TimelineClip | null) => void;
+  onUpdateClip: (clipId: string, change: Partial<ClipGeometry>) => void;
+  /** Fim de um arraste "mover": nova posição e (talvez) nova trilha. Sobrescreve o que estiver embaixo. */
+  onMoveClip: (clipId: string, geometry: ClipGeometry, trackId: string) => void;
+  onRemoveClip: (clipId: string) => void;
+  onPlayheadChange: (seconds: number) => void;
+  onNotice: (message: string) => void;
+  onAddTrack: (kind: TrackKind) => void;
+  onRemoveTrack: (trackId: string) => void;
+  onToggleTrack: (trackId: string, flag: TrackFlag) => void;
 };
 
 export default function Timeline(props: Props) {
-  const { media, clips, selectedClipId, playhead, ratio, canAddClip } = props;
+  const { media, tracks, clips, selectedClipId, playhead, ratio, canAddClip } = props;
   const scrollRef = useRef<HTMLDivElement>(null);
   const [pps, setPps] = useState(DEFAULT_PPS);
   const [drag, setDrag] = useState<DragState | null>(null);
@@ -69,17 +86,25 @@ export default function Timeline(props: Props) {
     return () => observer.disconnect();
   }, []);
 
-  // Sempre a versão mais recente dos callbacks, para os listeners globais de arraste.
+  // Sempre a versão mais recente das props, para os listeners globais de arraste.
   const propsRef = useRef(props);
   propsRef.current = props;
 
   const mediaById = useMemo(() => new Map(media.map((item) => [item.id, item])), [media]);
-  const isAudioClip = (clip: TimelineClip) => mediaById.get(clip.mediaId)?.kind === "audio";
+  const trackById = useMemo(() => new Map(tracks.map((track) => [track.id, track])), [tracks]);
+  // V2 fica acima de V1 (a de cima aparece por cima no preview); áudio vem depois.
+  const orderedTracks = useMemo(() => [
+    ...tracks.filter((track) => track.kind === "video").reverse(),
+    ...tracks.filter((track) => track.kind === "audio"),
+  ], [tracks]);
+
   const geometryOf = (clip: TimelineClip): ClipGeometry => drag?.clipId === clip.id ? drag.preview : clip;
+  const trackOf = (clip: TimelineClip) => drag?.clipId === clip.id ? drag.trackId : clip.trackId;
 
   const selectedClip = clips.find((clip) => clip.id === selectedClipId) ?? null;
   const selectedMedia = selectedClip ? mediaById.get(selectedClip.mediaId) ?? null : null;
   const selectedSource = sourceDurationOf(selectedMedia);
+  const selectedLocked = selectedClip ? Boolean(trackById.get(selectedClip.trackId)?.locked) : false;
 
   const totalDuration = clips.reduce((max, clip) => Math.max(max, clipEnd(geometryOf(clip))), 0);
   // A faixa ocupa pelo menos a área visível; cresce com o conteúdo (+4 s de folga).
@@ -99,14 +124,26 @@ export default function Timeline(props: Props) {
     event.stopPropagation();
     event.preventDefault();
     props.onSelectClip(clip);
+    const track = trackById.get(clip.trackId);
+    if (track?.locked) { props.onNotice("Esta trilha está travada. Destrave para editar."); return; }
     const original: ClipGeometry = { start: clip.start, duration: clip.duration, inPoint: clip.inPoint };
+    const bounds = freeBounds(clip, clips);
     const state: DragState = {
       clipId: clip.id, mode, startX: event.clientX, moved: false, original, preview: original,
+      trackId: clip.trackId, trackKind: track?.kind ?? trackKindFor(mediaById.get(clip.mediaId)?.kind ?? "video"),
       sourceDuration: sourceDurationOf(mediaById.get(clip.mediaId)),
       snapTargets: snapTargetsFor(clip.id, clips, playhead),
+      minStart: bounds.minStart, maxEnd: bounds.maxEnd,
     };
     dragRef.current = state;
     setDrag(state);
+  }
+
+  /** Trilha compatível e destravada sob o ponteiro (para mover clipes entre trilhas). */
+  function trackUnderPointer(event: PointerEvent, kind: TrackKind) {
+    const lane = document.elementFromPoint(event.clientX, event.clientY)?.closest<HTMLElement>("[data-track-id]");
+    const track = lane ? propsRef.current.tracks.find((entry) => entry.id === lane.dataset.trackId) : undefined;
+    return track && track.kind === kind && !track.locked ? track.id : null;
   }
 
   const dragging = drag !== null;
@@ -116,20 +153,24 @@ export default function Timeline(props: Props) {
       const current = dragRef.current;
       if (!current) return;
       const dx = event.clientX - current.startX;
-      if (!current.moved && Math.abs(dx) < DRAG_START_PX) return;
+      const trackId = current.mode === "move" ? trackUnderPointer(event, current.trackKind) ?? current.trackId : current.trackId;
+      if (!current.moved && Math.abs(dx) < DRAG_START_PX && trackId === current.trackId) return;
       // Segurar Alt desliga o snap.
       const preview = applyClipDrag(current.mode, current.original, dx / pps, {
         sourceDuration: current.sourceDuration, snapTargets: current.snapTargets,
         snapThreshold: event.altKey ? 0 : SNAP_PX / pps,
+        minStart: current.minStart, maxEnd: current.maxEnd,
       });
-      dragRef.current = { ...current, moved: true, preview };
+      dragRef.current = { ...current, moved: true, preview, trackId };
       setDrag(dragRef.current);
     };
     const finish = (commit: boolean) => {
       const current = dragRef.current;
       dragRef.current = null;
       setDrag(null);
-      if (commit && current?.moved) propsRef.current.onUpdateClip(current.clipId, current.preview);
+      if (!commit || !current?.moved) return;
+      if (current.mode === "move") propsRef.current.onMoveClip(current.clipId, current.preview, current.trackId);
+      else propsRef.current.onUpdateClip(current.clipId, current.preview);
     };
     const up = () => finish(true);
     const cancel = () => finish(false);
@@ -227,36 +268,59 @@ export default function Timeline(props: Props) {
       props.onNotice("Duração inválida. Digite um número em segundos, por exemplo 8 ou 2,5.");
       return;
     }
-    const duration = clampClipDuration(selectedClip, selectedSource, value);
+    const roomToNext = freeBounds(selectedClip, clips).maxEnd - selectedClip.start;
+    const duration = roundTime(Math.min(clampClipDuration(selectedClip, selectedSource, value), Math.max(roomToNext, selectedClip.duration)));
     props.onUpdateClip(selectedClip.id, { duration });
     setDurationDraft(formatSeconds(duration));
-    if (duration < value) props.onNotice(`Só há ${formatSeconds(duration)}s de mídia a partir do ponto de entrada. A duração foi limitada a esse valor.`);
+    if (duration < value) {
+      props.onNotice(duration >= roomToNext - 1e-6 && roomToNext < clampClipDuration(selectedClip, selectedSource, value)
+        ? `O próximo clipe começa em ${formatTimecode(selectedClip.start + roomToNext)}. A duração foi limitada para não sobrepor.`
+        : `Só há ${formatSeconds(duration)}s de mídia a partir do ponto de entrada. A duração foi limitada a esse valor.`);
+    }
   }
 
   function nudgeSelected(delta: number) {
     if (!selectedClip) return;
-    props.onUpdateClip(selectedClip.id, { start: roundTime(Math.max(0, selectedClip.start + delta)) });
+    // Empurrar para quando encosta no vizinho (não sobrescreve).
+    const { minStart, maxEnd } = freeBounds(selectedClip, clips);
+    const start = Math.min(Math.max(selectedClip.start + delta, minStart), maxEnd - selectedClip.duration);
+    props.onUpdateClip(selectedClip.id, { start: roundTime(Math.max(0, start)) });
   }
 
   // ---- Render --------------------------------------------------------------------
-  function renderClip(clip: TimelineClip) {
+  function renderClip(clip: TimelineClip, locked: boolean) {
     const item = mediaById.get(clip.mediaId);
     const audio = item?.kind === "audio";
     const geometry = geometryOf(clip);
     const width = Math.max(4, geometry.duration * pps);
     const narrow = width < NARROW_CLIP_PX;
-    const classes = ["timeline-clip", audio ? "audio-clip" : "video-clip",
+    const classes = ["timeline-clip", audio ? "audio-clip" : "video-clip", item?.kind === "image" ? "image-clip" : "",
       selectedClipId === clip.id ? "selected" : "", narrow ? "narrow" : "", drag?.clipId === clip.id ? "dragging" : ""].join(" ");
     const handleWidth = Math.min(7, width / 3);
     return <div key={clip.id} className={classes} style={{ left: geometry.start * pps, width }}
       onPointerDown={(event) => beginDrag(event, clip, "move")}
       title={`${item?.name ?? "Mídia não vinculada"} · ${formatSeconds(geometry.duration)}s`}>
-      <div className="clip-handle start" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-start")} />
+      {!locked && <div className="clip-handle start" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-start")} />}
       {!narrow && (audio ? <AudioLines size={13} /> : <Film size={13} />)}
       {!narrow && <span>{item?.name ?? (audio ? "Áudio" : "Mídia não vinculada")}</span>}
-      {!narrow && <button title="Remover clipe" onPointerDown={(event) => event.stopPropagation()}
+      {!narrow && !locked && <button title="Remover clipe" onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => { event.stopPropagation(); props.onRemoveClip(clip.id); }}><X size={12} /></button>}
-      <div className="clip-handle end" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-end")} />
+      {!locked && <div className="clip-handle end" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-end")} />}
+    </div>;
+  }
+
+  function renderTrackHeader(track: Track) {
+    const sameKind = tracks.filter((entry) => entry.kind === track.kind).length;
+    const empty = !clips.some((clip) => clip.trackId === track.id);
+    return <div className={`track-label ${track.kind}`}>
+      <b>{trackLabel(track, tracks)}</b>
+      {track.kind === "video" && <button className={track.hidden ? "active" : ""} title={track.hidden ? "Mostrar trilha no preview" : "Ocultar trilha no preview"}
+        onClick={() => props.onToggleTrack(track.id, "hidden")}>{track.hidden ? <EyeOff size={12} /> : <Eye size={12} />}</button>}
+      <button className={track.muted ? "active" : ""} title={track.muted ? "Ativar som da trilha" : "Silenciar trilha"}
+        onClick={() => props.onToggleTrack(track.id, "muted")}>{track.muted ? <VolumeX size={12} /> : <Volume2 size={12} />}</button>
+      <button className={track.locked ? "active" : ""} title={track.locked ? "Destravar trilha" : "Travar trilha"}
+        onClick={() => props.onToggleTrack(track.id, "locked")}>{track.locked ? <Lock size={12} /> : <LockOpen size={12} />}</button>
+      {empty && sameKind > 1 && <button title="Remover trilha vazia" onClick={() => props.onRemoveTrack(track.id)}><Trash2 size={12} /></button>}
     </div>;
   }
 
@@ -271,7 +335,7 @@ export default function Timeline(props: Props) {
             <button className="icon-button small" title="Desfazer (Ctrl+Z)" onClick={props.onUndo} disabled={!props.canUndo}><Undo2 size={14} /></button>
             <button className="icon-button small" title="Refazer (Ctrl+Y)" onClick={props.onRedo} disabled={!props.canRedo}><Redo2 size={14} /></button>
             <button className="icon-button small" title="Dividir no playhead (S)" onClick={props.onSplit} disabled={!clips.length}><SquareSplitHorizontal size={14} /></button>
-            <button className="icon-button small" title="Duplicar clipe selecionado (Ctrl+D)" onClick={props.onDuplicate} disabled={!selectedClip}><Copy size={14} /></button>
+            <button className="icon-button small" title="Duplicar clipe selecionado (Ctrl+D)" onClick={props.onDuplicate} disabled={!selectedClip || selectedLocked}><Copy size={14} /></button>
           </div>
           <span className="timeline-timecode" title="Posição do playhead (← → move, Shift = 1s)">{formatTimecode(playhead)}</span>
           <div className="zoom-controls">
@@ -288,42 +352,53 @@ export default function Timeline(props: Props) {
       {selectedClip && <div className="clip-edit-controls">
         <span>Clipe selecionado</span>
         <span className="clip-edit-name" title={selectedMedia?.name}>{selectedMedia?.name}</span>
-        <button className="button secondary compact" onClick={() => nudgeSelected(-0.5)} disabled={selectedClip.start <= 0}>← 0,5s</button>
-        <button className="button secondary compact" onClick={() => nudgeSelected(0.5)}>0,5s →</button>
-        <span>Início {formatTimecode(selectedClip.start)}</span>
-        <label>Duração <input type="text" inputMode="decimal" aria-label="Duração do clipe em segundos" value={durationDraft}
-          onChange={(event) => setDurationDraft(event.target.value)}
-          onBlur={commitDurationDraft}
-          onKeyDown={(event) => {
-            if (event.key === "Enter") event.currentTarget.blur();
-            if (event.key === "Escape") { setDurationDraft(formatSeconds(selectedClip.duration)); event.currentTarget.blur(); }
-          }} />s</label>
-        {selectedSource !== null && <span className="clip-edit-hint">máx. {formatSeconds(maxClipDuration(selectedClip, selectedSource))}s</span>}
-        {selectedClip.inPoint > 0 && <span className="clip-edit-hint">entrada na mídia {formatSeconds(selectedClip.inPoint)}s</span>}
-        <button className="button secondary compact" title="Remover clipe da timeline" onClick={() => props.onRemoveClip(selectedClip.id)}><X size={12} /> Remover</button>
+        {selectedLocked ? <span className="clip-edit-hint"><Lock size={11} /> trilha travada</span> : <>
+          <button className="button secondary compact" onClick={() => nudgeSelected(-0.5)} disabled={selectedClip.start <= 0}>← 0,5s</button>
+          <button className="button secondary compact" onClick={() => nudgeSelected(0.5)}>0,5s →</button>
+          <span>Início {formatTimecode(selectedClip.start)}</span>
+          <label>Duração <input type="text" inputMode="decimal" aria-label="Duração do clipe em segundos" value={durationDraft}
+            onChange={(event) => setDurationDraft(event.target.value)}
+            onBlur={commitDurationDraft}
+            onKeyDown={(event) => {
+              if (event.key === "Enter") event.currentTarget.blur();
+              if (event.key === "Escape") { setDurationDraft(formatSeconds(selectedClip.duration)); event.currentTarget.blur(); }
+            }} />s</label>
+          {selectedSource !== null && <span className="clip-edit-hint">máx. {formatSeconds(maxClipDuration(selectedClip, selectedSource))}s</span>}
+          {selectedClip.inPoint > 0 && <span className="clip-edit-hint">entrada na mídia {formatSeconds(selectedClip.inPoint)}s</span>}
+          <button className="button secondary compact" title="Remover clipe da timeline" onClick={() => props.onRemoveClip(selectedClip.id)}><X size={12} /> Remover</button>
+        </>}
       </div>}
 
       <div className="timeline-scroll" ref={scrollRef}>
         <div className="timeline-tracks" style={{ width: laneWidth + TRACK_LABEL_PX }}>
-          <div className="timeline-ruler" style={{ width: laneWidth }} onPointerDown={scrubStart} onPointerMove={scrubMove}>
-            {Array.from({ length: tickCount }, (_, i) => <span key={i} style={{ left: i * stepPx }}>{formatTimecode(i * step)}</span>)}
+          <div className="ruler-row">
+            <div className="ruler-corner" />
+            <div className="timeline-ruler" style={{ width: laneWidth }} onPointerDown={scrubStart} onPointerMove={scrubMove}>
+              {Array.from({ length: tickCount }, (_, i) => <span key={i} style={{ left: i * stepPx }}>{formatTimecode(i * step)}</span>)}
+            </div>
           </div>
-          <div className="track-row"><div className="track-label"><Video size={14} /> V1</div>
-            <div className="track-lane" style={{ width: laneWidth, backgroundImage: laneBackground }} onPointerDown={laneClick}>
-              {clips.filter((clip) => !isAudioClip(clip)).map(renderClip)}
-            </div></div>
-          <div className="track-row"><div className="track-label"><Music2 size={14} /> A1</div>
-            <div className="track-lane audio-lane" style={{ width: laneWidth, backgroundImage: laneBackground }} onPointerDown={laneClick}>
-              {clips.filter(isAudioClip).map(renderClip)}
-            </div></div>
+          {orderedTracks.map((track) => {
+            const dropTarget = drag?.moved && drag.trackId === track.id && drag.mode === "move";
+            return <div key={track.id} className={`track-row ${track.locked ? "locked" : ""} ${track.hidden ? "hidden-track" : ""}`}>
+              {renderTrackHeader(track)}
+              <div className={`track-lane ${track.kind === "audio" ? "audio-lane" : ""} ${dropTarget ? "drop-target" : ""}`} data-track-id={track.id}
+                style={{ width: laneWidth, backgroundImage: laneBackground }} onPointerDown={laneClick}>
+                {clips.filter((clip) => trackOf(clip) === track.id).map((clip) => renderClip(clip, track.locked))}
+              </div>
+            </div>;
+          })}
           <div className="timeline-playhead" style={{ left: TRACK_LABEL_PX + playhead * pps }} />
         </div>
         {clips.length === 0 && <div className="timeline-empty"><Scissors size={16} /> Importe uma mídia e clique em + para adicioná-la à timeline.</div>}
       </div>
 
       <div className="timeline-footer">
-        <span>{clips.length} clipe(s) · duração {formatTimecode(totalDuration)}</span>
-        <span>{dragInfo ?? "Arraste para mover · bordas aparam · S divide · Del remove · Ctrl+Z desfaz · Alt+←/→ move o clipe"}</span>
+        <span className="track-add">
+          <button onClick={() => props.onAddTrack("video")} title="Adicionar trilha de vídeo"><Plus size={11} /> Vídeo</button>
+          <button onClick={() => props.onAddTrack("audio")} title="Adicionar trilha de áudio"><Plus size={11} /> Áudio</button>
+          {clips.length} clipe(s) · duração {formatTimecode(totalDuration)}
+        </span>
+        <span>{dragInfo ?? "Arraste para mover (entre trilhas também) · bordas aparam · S divide · Del remove · Ctrl+Z desfaz"}</span>
       </div>
     </div>
   );

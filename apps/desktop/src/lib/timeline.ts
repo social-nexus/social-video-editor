@@ -43,6 +43,9 @@ export type DragOptions = {
   snapTargets: number[];
   /** Distância máxima de snap, em segundos (0 desliga). */
   snapThreshold: number;
+  /** Ao aparar: até onde o início pode recuar / o fim pode avançar sem invadir o vizinho. */
+  minStart?: number;
+  maxEnd?: number;
 };
 
 /**
@@ -52,7 +55,7 @@ export type DragOptions = {
  * - trim-start: muda o início mantendo o fim fixo; ajusta o ponto de entrada na mídia.
  */
 export function applyClipDrag(mode: DragMode, original: ClipGeometry, delta: number, options: DragOptions): ClipGeometry {
-  const { sourceDuration, snapTargets, snapThreshold } = options;
+  const { sourceDuration, snapTargets, snapThreshold, minStart = 0, maxEnd = Infinity } = options;
 
   if (mode === "move") {
     let start = Math.max(0, original.start + delta);
@@ -68,6 +71,7 @@ export function applyClipDrag(mode: DragMode, original: ClipGeometry, delta: num
     let end = clipEnd(original) + delta;
     const snapped = nearestSnap(end, snapTargets, snapThreshold);
     if (snapped !== null) end = snapped;
+    end = Math.min(end, Math.max(maxEnd, clipEnd(original)));
     return { ...original, duration: clampClipDuration(original, sourceDuration, end - original.start) };
   }
 
@@ -77,7 +81,7 @@ export function applyClipDrag(mode: DragMode, original: ClipGeometry, delta: num
   const snapped = nearestSnap(start, snapTargets, snapThreshold);
   if (snapped !== null) start = snapped;
   // Não pode voltar antes do começo da mídia de origem (imagens não têm esse limite).
-  const earliest = sourceDuration === null ? 0 : Math.max(0, original.start - original.inPoint);
+  const earliest = Math.max(minStart > original.start ? 0 : minStart, sourceDuration === null ? 0 : original.start - original.inPoint, 0);
   start = Math.min(Math.max(start, earliest), end - MIN_CLIP_DURATION);
   const inPoint = sourceDuration === null ? 0 : Math.max(0, original.inPoint + (start - original.start));
   return { start: roundTime(start), duration: roundTime(end - start), inPoint: roundTime(inPoint) };
@@ -98,11 +102,6 @@ export function splitClip(clip: TimelineClip, at: number, newId: string, hasSour
     inPoint: hasSource ? roundTime(clip.inPoint + firstDuration) : 0,
   };
   return [first, second];
-}
-
-/** Fim da última trilha que contém clipes do mesmo tipo (vídeo/imagem ou áudio). */
-export function laneEnd(clips: TimelineClip[], inSameLane: (clip: TimelineClip) => boolean) {
-  return clips.filter(inSameLane).reduce((max, clip) => Math.max(max, clipEnd(clip)), 0);
 }
 
 /** Passo entre as marcas da régua para que fiquem a pelo menos `minPx` pixels uma da outra. */

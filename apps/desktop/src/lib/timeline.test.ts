@@ -61,8 +61,8 @@ describe("snap e limites", () => {
   });
   it("snapTargetsFor ignora o próprio clipe", () => {
     const clips: TimelineClip[] = [
-      { id: "a", mediaId: "m", start: 0, duration: 4, inPoint: 0 },
-      { id: "b", mediaId: "m", start: 4, duration: 2, inPoint: 0 },
+      { id: "a", mediaId: "m", trackId: "v", start: 0, duration: 4, inPoint: 0 },
+      { id: "b", mediaId: "m", trackId: "v", start: 4, duration: 2, inPoint: 0 },
     ];
     expect(snapTargetsFor("a", clips, 3)).toEqual([0, 3, 4, 6]);
   });
@@ -86,5 +86,16 @@ describe("tempo", () => {
     expect(parseSeconds("2,5")).toBe(2.5);
     expect(parseSeconds("8")).toBe(8);
     expect(Number.isNaN(parseSeconds(" "))).toBe(true);
+  });
+});
+
+describe("applyClipDrag com vizinhos", () => {
+  it("aparar o fim para no próximo clipe", () => {
+    const image = { start: 0, duration: 5, inPoint: 0 };
+    expect(applyClipDrag("trim-end", image, 10, { sourceDuration: null, ...noSnap, maxEnd: 7 }).duration).toBe(7);
+  });
+  it("aparar o início para no clipe anterior", () => {
+    const image = { start: 5, duration: 5, inPoint: 0 };
+    expect(applyClipDrag("trim-start", image, -10, { sourceDuration: null, ...noSnap, minStart: 3 })).toEqual({ start: 3, duration: 7, inPoint: 0 });
   });
 });
