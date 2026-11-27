@@ -1,6 +1,7 @@
 import type { MediaItem, TimelineClip, TimelineState } from "../types";
 import { clipEnd, clipSpeed } from "./timeline";
 import { clipVolume, effectiveFades, trackVolume } from "./audio";
+import { clipTransformExpr, motionFilters } from "./renderMotion";
 
 /** Qualidade da exportação (CRF do x264: menor = melhor e maior). */
 export const QUALITY_PRESETS = [
@@ -131,7 +132,16 @@ export function buildRenderPlan(
       const timing = item.kind === "image"
         ? `trim=duration=${num(length)},setpts=PTS-STARTPTS`
         : `trim=duration=${num(length * speed)},setpts=(PTS-STARTPTS)/${num(speed)}`;
-      chains.push(`[${index}:v]${timing},fps=${fps},${fitFilter(clip, width, height)},setsar=1,format=yuv420p,setpts=PTS+${num(clip.start)}/TB[${label}]`);
+      const prepared = `[${index}:v]${timing},fps=${fps},${fitFilter(clip, width, height)},setsar=1,format=yuv420p`;
+      const transform = clipTransformExpr(clip, length);
+      if (!transform) chains.push(`${prepared},setpts=PTS+${num(clip.start)}/TB[${label}]`);
+      else {
+        // Ken Burns e entrada/saída: em resolução dobrada (até 1080p) para o movimento não tremer.
+        const factor = width * height <= 1920 * 1080 ? 2 : 1;
+        chains.push(`${prepared}[f${overlays}]`);
+        chains.push(...motionFilters(transform, `f${overlays}`, `m${overlays}`, String(overlays), { width, height, fps, length, factor }));
+        chains.push(`[m${overlays}]format=yuv420p,setpts=PTS+${num(clip.start)}/TB[${label}]`);
+      }
       const next = `o${overlays}`;
       chains.push(`[${current}][${label}]overlay=eof_action=pass:enable='between(t,${num(clip.start)},${num(clip.start + length)})'[${next}]`);
       current = next;

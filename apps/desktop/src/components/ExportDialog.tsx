@@ -97,7 +97,6 @@ export default function ExportDialog({ state, media, ratio, projectName, onClose
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [state, media, duration]);
   const pending: string[] = [];
-  if (state.clips.some((clip) => clip.motion || clip.animIn || clip.animOut)) pending.push("movimentos (Ken Burns) e animações de entrada e saída");
   if (state.captions.length) pending.push("legendas");
 
   async function chooseFfmpeg() {
@@ -178,7 +177,7 @@ export default function ExportDialog({ state, media, ratio, projectName, onClose
             <Clapperboard size={13} /> {size.width}×{size.height} · {saved.fps} fps · duração <b>{formatTimecode(duration)}</b> · H.264 + AAC (MP4), codificado no processador
           </p>
           {preview.warnings.map((warning) => <p key={warning} className="export-note warn"><AlertTriangle size={13} /> {warning}</p>)}
-          {pending.length > 0 && <p className="export-note"><Info size={13} /> Ainda não entram no arquivo: {pending.join(" e ")}. Chegam nas próximas etapas da exportação.</p>}
+          {pending.length > 0 && <p className="export-note"><Info size={13} /> Ainda não entram no arquivo: {pending.join(" e ")}. Chegam na próxima etapa da exportação.</p>}
 
           {phase.kind === "rendering" && <div className="export-progress">
             <div className="export-bar"><div style={{ width: `${progress * 100}%` }} /></div>
