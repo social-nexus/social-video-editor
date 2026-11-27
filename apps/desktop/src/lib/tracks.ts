@@ -80,3 +80,16 @@ export function overwriteRange(
 /** Clipes que estão tocando no instante `time` (início incluso, fim excluso). */
 export const clipsAt = (clips: TimelineClip[], time: number) =>
   clips.filter((clip) => clip.start <= time + 1e-9 && clipEnd(clip) > time + 1e-9);
+
+/**
+ * Trilha para uma sobreposição em [start, end): a primeira trilha de vídeo destravada acima
+ * de tudo o que aparece nesse trecho (fica por cima). null = precisa criar uma trilha nova.
+ */
+export function overlayTrack(tracks: Track[], clips: TimelineClip[], start: number, end: number): string | null {
+  const video = tracks.filter((track) => track.kind === "video");
+  let highest = -1;
+  video.forEach((track, index) => {
+    if (clips.some((clip) => clip.trackId === track.id && clip.start < end - 1e-6 && clipEnd(clip) > start + 1e-6)) highest = index;
+  });
+  return video.slice(highest + 1).find((track) => !track.locked)?.id ?? null;
+}

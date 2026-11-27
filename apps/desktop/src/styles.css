@@ -256,3 +256,16 @@
 .caption-move-choice span { flex-basis: 100%; }
 /* A escolha fica sempre no meio do preview (legenda lá embaixo não esconde os botões) */
 .caption-move-choice { left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.overlay-add { margin-top: 7px; }
+/* Arrastar mídia da biblioteca para a timeline */
+.asset-row[draggable="true"] { cursor: grab; }
+.asset-row[draggable="true"]:active { cursor: grabbing; }
+.media-drop-ghost { position: absolute; top: 4px; bottom: 4px; border-radius: 6px; border: 1.5px dashed #f472b6; background: #ec489933; color: #fce7f3; font-size: 10px; padding: 0 7px; display: flex; align-items: center; overflow: hidden; white-space: nowrap; pointer-events: none; z-index: 4; }
+.new-track-drop .track-lane { position: relative; border: 1px dashed #3f3f4a; background: #15151b; }
+.new-track-drop .track-lane.drop-target { border-color: #f472b6; }
+.new-track-head { display: flex; align-items: center; justify-content: center; font-size: 10px; color: #a1a1aa; }
+.new-track-hint { position: absolute; left: 10px; top: 50%; transform: translateY(-50%); font-size: 10px; color: #71717a; pointer-events: none; white-space: nowrap; }
+.drag-floater { position: fixed; left: 0; top: 0; z-index: 9999; pointer-events: none; padding: 5px 10px; border-radius: 7px; background: #ec4899; color: #fff; font-size: 11px; box-shadow: 0 6px 18px #0009; max-width: 260px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+body.dragging-media, body.dragging-media * { cursor: grabbing !important; user-select: none; }
+.asset-row { touch-action: none; }
+.files-over-hint { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 9998; pointer-events: none; padding: 9px 16px; border-radius: 9px; background: #18181fee; border: 1px dashed #f472b6; color: #fce7f3; font-size: 12px; box-shadow: 0 8px 24px #000a; }

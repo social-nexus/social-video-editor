@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clipsAt, freeBounds, overwriteRange, trackEnd, trackLabel } from "./tracks";
+import { clipsAt, freeBounds, overlayTrack, overwriteRange, trackEnd, trackLabel } from "./tracks";
 import type { TimelineClip, Track } from "../types";
 
 const clip = (id: string, start: number, duration: number, trackId = "v1", inPoint = 0): TimelineClip =>
@@ -48,5 +48,25 @@ describe("trilhas", () => {
     const clips = [clip("a", 0, 2), clip("b", 2, 3), clip("c", 1, 9, "a1")];
     expect(trackEnd(clips, "v1")).toBe(5);
     expect(clipsAt(clips, 2).map((c) => c.id)).toEqual(["b", "c"]);
+  });
+});
+
+describe("sobreposição", () => {
+  const v1 = { id: "v1", kind: "video" as const, hidden: false, muted: false, locked: false };
+  const a1 = { id: "a1", kind: "audio" as const, hidden: false, muted: false, locked: false };
+  const v2 = { ...v1, id: "v2" };
+  const v3 = { ...v1, id: "v3" };
+  const clip = (id: string, trackId: string, start: number, duration: number) => ({ id, mediaId: "m", trackId, start, duration, inPoint: 0 });
+  it("vai para a trilha logo acima do que aparece no trecho", () => {
+    expect(overlayTrack([v1, a1, v2, v3], [clip("a", "v1", 0, 10)], 2, 5)).toBe("v2");
+    expect(overlayTrack([v1, a1, v2, v3], [clip("a", "v1", 0, 10), clip("b", "v2", 4, 2)], 2, 5)).toBe("v3");
+    expect(overlayTrack([v1, a1, v2, v3], [clip("a", "v1", 0, 10), clip("b", "v2", 6, 2)], 2, 5)).toBe("v2");
+  });
+  it("sem espaço por cima: precisa de trilha nova; trilha travada não serve", () => {
+    expect(overlayTrack([v1, v2], [clip("a", "v1", 0, 10), clip("b", "v2", 0, 10)], 2, 5)).toBeNull();
+    expect(overlayTrack([v1, { ...v2, locked: true }], [clip("a", "v1", 0, 10)], 2, 5)).toBeNull();
+  });
+  it("trecho vazio: a primeira trilha de vídeo", () => {
+    expect(overlayTrack([v1, v2], [], 0, 5)).toBe("v1");
   });
 });

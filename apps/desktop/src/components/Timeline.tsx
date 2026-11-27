@@ -8,13 +8,14 @@ import {
 import type { Caption, ClipAudio, ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
 import { formatSeconds, formatTimecode, parseSeconds, roundTime } from "../lib/time";
 import {
-  applyClipDrag, clampClipDuration, clipEnd, clipSpeed, maxClipDuration, rulerStep, snapTargetsFor, sourceDurationOf,
+  applyClipDrag, clampClipDuration, clipEnd, clipSpeed, maxClipDuration, nearestSnap, rulerStep, snapTargetsFor, sourceDurationOf,
   type DragMode,
 } from "../lib/timeline";
 import { freeBounds, trackKindFor, trackLabel } from "../lib/tracks";
 import { clipVolume, effectiveFades, formatPercent, trackVolume } from "../lib/audio";
 import ClipWaveform from "./ClipWaveform";
 import CaptionLane, { CaptionEditBar } from "./CaptionLane";
+import { MEDIA_DRAG_EVENT, setDropResolver, type DragPayload, type DragState as MediaDragState, type DropSpot } from "../lib/dragMedia";
 
 const TRACK_LABEL_PX = 104;
 /** Distância, no conteúdo rolável, entre a borda esquerda e o instante 0 (padding + cabeçalho da trilha). */
@@ -82,7 +83,12 @@ type Props = {
   onAddTrack: (kind: TrackKind) => void;
   onRemoveTrack: (trackId: string) => void;
   onToggleTrack: (trackId: string, flag: TrackFlag) => void;
+  /** Mídia arrastada e solta numa trilha (ou numa trilha nova do tipo dado), no instante `start`. */
+  onDropMedia: (mediaId: string, target: string | TrackKind, start: number) => void;
 };
+
+/** Onde a mídia arrastada da biblioteca vai entrar (prévia na timeline). */
+type MediaDrop = { target: string | TrackKind; start: number; duration: number; name: string };
 
 export default function Timeline(props: Props) {
   const { media, tracks, clips, selectedClipId, playhead, ratio, canAddClip } = props;
@@ -95,6 +101,10 @@ export default function Timeline(props: Props) {
   const [fadeInDraft, setFadeInDraft] = useState("");
   const [fadeOutDraft, setFadeOutDraft] = useState("");
   const [viewportWidth, setViewportWidth] = useState(800);
+  const [mediaDragging, setMediaDragging] = useState(false);
+  const [mediaDrop, setMediaDrop] = useState<MediaDrop | null>(null);
+  const [mediaDropInfo, setMediaDropInfo] = useState<string | null>(null);
+
 
   useEffect(() => {
     const scroller = scrollRef.current;
@@ -226,6 +236,53 @@ export default function Timeline(props: Props) {
       window.removeEventListener("keydown", key);
     };
   }, [dragging, pps]);
+
+  // ---- Mídia arrastada até a timeline (biblioteca ou arquivos do computador) ------
+  /** Ponto da tela → trilha + instante (com ímã), ou o motivo de não aceitar. */
+  function spotAt(x: number, y: number, payload: DragPayload): { spot: DropSpot | null; info: string } {
+    const lane = document.elementFromPoint(x, y)?.closest<HTMLElement>("[data-track-id], [data-new-track]");
+    if (!lane) return { spot: null, info: "Arraste até uma trilha e solte no ponto que quiser" };
+    const target = (lane.dataset.trackId ?? lane.dataset.newTrack) as string;
+    const track = lane.dataset.trackId ? trackById.get(lane.dataset.trackId) : undefined;
+    const targetKind = track ? track.kind : target as TrackKind;
+    if (targetKind !== payload.kind) return { spot: null, info: payload.kind === "audio" ? "Áudio vai numa trilha de áudio (A)" : "Imagem e vídeo vão numa trilha de vídeo (V)" };
+    if (track?.locked) return { spot: null, info: "Trilha travada" };
+    const raw = Math.max(0, (x - lane.getBoundingClientRect().left) / pps);
+    // Ímã: o começo ou o fim encosta em bordas de clipes, no playhead ou no 0.
+    const targets = snapTargetsFor("", clips, playhead);
+    const threshold = SNAP_PX / pps;
+    const snapStart = nearestSnap(raw, targets, threshold);
+    const snapEnd = nearestSnap(raw + payload.duration, targets, threshold);
+    const start = roundTime(Math.max(0, snapStart ?? (snapEnd !== null ? snapEnd - payload.duration : raw)));
+    return { spot: { target, start }, info: `Solte para colocar “${payload.name}” em ${formatTimecode(start)}${track ? "" : " numa trilha nova"} · o que estiver embaixo é sobrescrito` };
+  }
+  const spotRef = useRef(spotAt);
+  spotRef.current = spotAt;
+
+  useEffect(() => {
+    setDropResolver((x, y, payload) => spotRef.current(x, y, payload).spot);
+    const sync = (event: Event) => {
+      const drag = (event as CustomEvent<MediaDragState>).detail;
+      setMediaDragging(Boolean(drag));
+      if (!drag) { setMediaDrop(null); setMediaDropInfo(null); return; }
+      const { spot, info } = spotRef.current(drag.x, drag.y, drag.payload);
+      setMediaDrop(spot ? { ...spot, duration: drag.payload.duration, name: drag.payload.name } : null);
+      setMediaDropInfo(info);
+    };
+    window.addEventListener(MEDIA_DRAG_EVENT, sync);
+    return () => { window.removeEventListener(MEDIA_DRAG_EVENT, sync); setDropResolver(null); };
+  }, []);
+
+  const mediaGhost = (target: string | TrackKind) => mediaDrop && mediaDrop.target === target
+    ? <div className="media-drop-ghost" style={{ left: mediaDrop.start * pps, width: Math.max(4, mediaDrop.duration * pps) }}>{mediaDrop.name}</div> : null;
+
+  const newTrackDrop = (kind: TrackKind) => mediaDragging && <div className="track-row new-track-drop">
+    <div className={`track-label ${kind} new-track-head`}><b>+ {kind === "video" ? "V" : "A"}</b></div>
+    <div className={`track-lane ${kind === "audio" ? "audio-lane" : ""} ${mediaDrop?.target === kind ? "drop-target" : ""}`} style={{ width: laneWidth }}
+      data-new-track={kind}>
+      {mediaGhost(kind) ?? <span className="new-track-hint">Solte aqui para criar uma trilha de {kind === "video" ? "vídeo" : "áudio"} nova</span>}
+    </div>
+  </div>;
 
   // ---- Playhead ------------------------------------------------------------------
   function timeAtPointer(event: ReactPointerEvent<HTMLElement>) {
@@ -461,11 +518,15 @@ export default function Timeline(props: Props) {
             return <div key={track.id} className={`track-row ${track.locked ? "locked" : ""} ${track.hidden ? "hidden-track" : ""}`}>
               {renderTrackHeader(track)}
               <div className={`track-lane ${track.kind === "audio" ? "audio-lane" : ""} ${dropTarget ? "drop-target" : ""}`} data-track-id={track.id}
-                style={{ width: laneWidth, backgroundImage: laneBackground }} onPointerDown={laneClick}>
+                style={{ width: laneWidth, backgroundImage: laneBackground }} onPointerDown={laneClick}
+>
                 {clips.filter((clip) => trackOf(clip) === track.id).map((clip) => renderClip(clip, track.locked))}
+                {mediaGhost(track.id)}
               </div>
             </div>;
           })}
+          {newTrackDrop("video")}
+          {newTrackDrop("audio")}
           <CaptionLane captions={props.captions} selectedCaptionId={props.selectedCaptionId} visible={props.captionsVisible}
             pps={pps} laneWidth={laneWidth} laneBackground={laneBackground} playhead={playhead}
             clipEdges={clips.flatMap((clip) => [clip.start, clipEnd(clip)])}
@@ -483,7 +544,7 @@ export default function Timeline(props: Props) {
           <button onClick={() => props.onAddTrack("audio")} title="Adicionar trilha de áudio"><Plus size={11} /> Áudio</button>
           {clips.length} clipe(s) · duração {formatTimecode(totalDuration)}
         </span>
-        <span>{dragInfo ?? "Arraste para mover (entre trilhas também) · bordas aparam · S divide · Del remove · Ctrl+Z desfaz"}</span>
+        <span>{mediaDragging ? mediaDropInfo ?? "Arraste até uma trilha e solte no ponto que quiser" : dragInfo ?? "Arraste para mover (entre trilhas também) · bordas aparam · S divide · Del remove · Ctrl+Z desfaz"}</span>
       </div>
     </div>
   );

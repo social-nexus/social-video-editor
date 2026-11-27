@@ -1,7 +1,8 @@
 import type { CaptionStyle, MediaItem, TimelineClip, TimelineState } from "../types";
 import { clipEnd, clipSpeed } from "./timeline";
 import { clipVolume, effectiveFades, trackVolume } from "./audio";
-import { clipTransformExpr, motionFilters } from "./renderMotion";
+import { clipTransformExpr, fadeBlend, motionFilters } from "./renderMotion";
+import { effectiveAnimations } from "./animations";
 import { buildAssCaptions } from "./assCaptions";
 import { isIdentity, placementFilters } from "./placement";
 
@@ -60,6 +61,8 @@ export function outputSize(ratio: string, shortSide: number): { width: number; h
     ? { width: even(shortSide * w / h), height: even(shortSide) }
     : { width: even(shortSide), height: even(shortSide * h / w) };
 }
+
+const isGif = (path: string) => /\.gif$/i.test(path);
 
 /** Número curto e estável para o ffmpeg (sem notação científica). */
 export const num = (value: number) => {
@@ -132,7 +135,9 @@ export function buildRenderPlan(
 
     const index = inputs.filter((arg) => arg === "-i").length;
     sources.add(item.path);
-    if (item.kind === "image") inputs.push("-loop", "1", "-framerate", String(fps), "-t", num(length), "-i", item.path);
+    // GIF: animação repetida até o fim do clipe; outras imagens: um quadro repetido.
+    if (item.kind === "image" && isGif(item.path)) inputs.push("-stream_loop", "-1", "-t", num(length), "-i", item.path);
+    else if (item.kind === "image") inputs.push("-loop", "1", "-framerate", String(fps), "-t", num(length), "-i", item.path);
     else inputs.push("-ss", num(clip.inPoint), "-t", num(length * speed + 0.5), "-i", item.path);
 
     if (showsImage) {
@@ -156,7 +161,20 @@ export function buildRenderPlan(
       }
       const next = `o${overlays}`;
       const at = placed.x === "0" && placed.y === "0" ? "" : `x='${placed.x}':y='${placed.y}':`;
-      chains.push(`[${current}][${label}]overlay=${at}eof_action=pass:enable='between(t,${num(clip.start)},${num(clip.start + length)})'[${next}]`);
+      const overlay = `overlay=${at}eof_action=pass:enable='between(t,${num(clip.start)},${num(clip.start + length)})'`;
+      if (transform?.fades) {
+        // Fade revelando as camadas de baixo: mistura "com" e "sem" a camada só na entrada/saída.
+        const { inDur, outDur } = effectiveAnimations({ ...clip, duration: length });
+        const windows: [number, number][] = [];
+        if (clip.animIn && inDur > 0) windows.push([clip.start, clip.start + inDur]);
+        if (clip.animOut && outDur > 0) windows.push([clip.start + length - outDur, clip.start + length]);
+        const blend = fadeBlend(transform.opacity, clip.start, windows);
+        chains.push(`[${current}]split[keep${overlays}][under${overlays}]`);
+        chains.push(`[under${overlays}][${label}]${overlay}[ov${overlays}]`);
+        chains.push(`[ov${overlays}][keep${overlays}]blend=all_expr='${blend.expr}':enable='${blend.enable}'[${next}]`);
+      } else {
+        chains.push(`[${current}][${label}]${overlay}[${next}]`);
+      }
       current = next;
       overlays++;
     }

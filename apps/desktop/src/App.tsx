@@ -1,12 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
-import {
-  AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon,
-  Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
-  Video, WandSparkles, X, MonitorPlay
-} from "lucide-react";
+import { getCurrentWebview } from "@tauri-apps/api/webview";
+import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers } from "lucide-react";
 import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
 import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
@@ -19,7 +17,7 @@ import EffectsPanel, { type ApplyAllOptions, type EffectsChange } from "./compon
 import { makeMotion, MOTION_PRESETS, presetForIndex } from "./lib/effects";
 import { validAnimation } from "./lib/animations";
 import { validCaptionStyle } from "./lib/captionWords";
-import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor } from "./lib/tracks";
+import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor, overlayTrack } from "./lib/tracks";
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline, { type TrackFlag } from "./components/Timeline";
 import ProgramMonitor from "./components/ProgramMonitor";
@@ -28,6 +26,7 @@ import ExportDialog from "./components/ExportDialog";
 import StartScreen from "./components/StartScreen";
 import UnsavedDialog from "./components/UnsavedDialog";
 import { isIdentity, validPlacement } from "./lib/placement";
+import { endDrag, moveDrag, resolveDrop, type DragPayload, type DropSpot } from "./lib/dragMedia";
 import { forgetProject, loadRecent, projectFileName, rememberProject, setRecentThumb, thumbnailSource, type RecentProject } from "./lib/recent";
 import type { AssemblyPlan } from "./lib/autoassemble";
 
@@ -151,18 +150,18 @@ export default function App() {
     const results = await Promise.all(items.map((item) => item.missing ? Promise.resolve(null) : probeMediaDuration(item.url, item.kind)));
     const durations = new Map<string, number>();
     items.forEach((item, index) => { const value = results[index]; if (value !== null) durations.set(item.id, roundTime(value)); });
-    if (!durations.size) return;
-    setMedia((current) => current.map((entry) => durations.has(entry.id) ? { ...entry, duration: durations.get(entry.id) } : entry));
+    if (durations.size) setMedia((current) => current.map((entry) => durations.has(entry.id) ? { ...entry, duration: durations.get(entry.id) } : entry));
+    return durations;
   }
 
-  /** Adiciona arquivos do disco à biblioteca, pulando os que já estão nela. Retorna quantos entraram. */
+  /** Adiciona arquivos do disco à biblioteca, pulando os que já estão nela. Retorna os que entraram. */
   async function importPaths(paths: string[]) {
     const known = new Set(media.map((item) => item.path?.toLowerCase()).filter(Boolean));
     const fresh = paths.filter((path) => !known.has(path.toLowerCase()));
     const repeated = paths.length - fresh.length;
     if (!fresh.length) {
       setNotice(repeated ? "Esses arquivos já estão na biblioteca." : "Nenhum arquivo de mídia compatível encontrado.");
-      return 0;
+      return [] as MediaItem[];
     }
     const info = await invoke<FileInfo[]>("media_file_info", { paths: fresh });
     const additions: MediaItem[] = fresh.map((mediaPath, index) => {
@@ -170,12 +169,12 @@ export default function App() {
       return { id: crypto.randomUUID(), file: null, path: mediaPath, url: convertFileSrc(mediaPath), name, kind: kindFromFileName(name),
         size: info[index]?.size ?? 0, missing: !info[index]?.exists, duration: null };
     }).filter((item) => item.kind !== "other");
-    if (!additions.length) { setNotice("Nenhum arquivo de mídia compatível selecionado."); return 0; }
+    if (!additions.length) { setNotice("Nenhum arquivo de mídia compatível selecionado."); return additions; }
     setMedia((current) => [...current, ...additions]);
     setSelectedId((current) => current ?? additions[0].id);
     setNotice(`${additions.length} arquivo(s) importado(s)${repeated ? `; ${repeated} já estava(m) na biblioteca e foi(ram) ignorado(s)` : ""}.`);
     void loadMediaDurations(additions);
-    return additions.length;
+    return additions;
   }
 
   async function importMediaFromDisk() {
@@ -355,6 +354,186 @@ export default function App() {
       ? `“${item.name}” foi colocado na timeline com a duração real: ${formatSeconds(duration)}s.`
       : `“${item.name}” foi colocado na timeline. Duração inicial: ${formatSeconds(duration)}s.`);
   }
+
+  /**
+   * Sobreposição: no playhead, numa trilha por cima do que aparece ali (cria uma se precisar),
+   * já menor e centralizada, para arrastar no preview.
+   */
+  function addAsOverlay(item: MediaItem) {
+    if (item.kind === "audio") return;
+    const duration = roundTime(sourceDurationOf(item) ?? DEFAULT_IMAGE_DURATION);
+    const start = roundTime(playheadRef.current);
+    const clipId = crypto.randomUUID();
+    let created = false;
+    editTimeline((state) => {
+      let trackId = overlayTrack(state.tracks, state.clips, start, start + duration);
+      let tracks = state.tracks;
+      if (!trackId) { const track = newTrack("video"); tracks = [...tracks, track]; trackId = track.id; created = true; }
+      return { ...state, tracks, clips: [...state.clips, { id: clipId, mediaId: item.id, trackId, start, duration, inPoint: 0,
+        placement: { x: 0, y: 0, scale: 0.5, rotation: 0 } }] };
+    });
+    setSelectedClipId(clipId);
+    setSelectedCaptionId(null);
+    setPlaying(false);
+    setPreviewMode("program");
+    setNotice(`“${item.name}” entrou como sobreposição no playhead${created ? ", numa trilha nova" : ""}. Arraste no preview para posicionar.`);
+  }
+
+  /**
+   * Mídia arrastada até a timeline: entra na trilha e no instante em que foi solta (sobrescreve o que estiver embaixo).
+   * `target` = id da trilha, ou "video"/"audio" para criar uma trilha nova. Retorna a trilha usada (null = não coube).
+   */
+  function dropMediaItem(item: MediaItem, target: string | TrackKind, start: number, knownDuration?: number): string | null {
+    if (item.missing) return null;
+    const kind = trackKindFor(item.kind);
+    const duration = roundTime(knownDuration ?? sourceDurationOf(item) ?? DEFAULT_IMAGE_DURATION);
+    const clipId = crypto.randomUUID();
+    let usedTrack: string | null = null;
+    editTimeline((state) => {
+      let tracks = state.tracks;
+      let trackId: string;
+      if (target === "video" || target === "audio") {
+        if (target !== kind) return state;
+        const track = newTrack(kind);
+        tracks = [...tracks, track];
+        trackId = track.id;
+      } else {
+        const track = tracks.find((entry) => entry.id === target);
+        if (!track || track.locked || track.kind !== kind) return state;
+        trackId = track.id;
+      }
+      usedTrack = trackId;
+      return { ...state, tracks, clips: placeClip(state.clips, { id: clipId, mediaId: item.id, trackId, start: roundTime(Math.max(0, start)), duration, inPoint: 0 }) };
+    });
+    if (!usedTrack) return null;
+    setSelectedClipId(clipId);
+    setSelectedCaptionId(null);
+    setPreviewMode("program");
+    setNotice(`“${item.name}” colocado na timeline em ${formatTimecode(start)}.`);
+    return usedTrack;
+  }
+
+  function dropMedia(mediaId: string, target: string | TrackKind, start: number) {
+    const item = media.find((entry) => entry.id === mediaId);
+    if (item) dropMediaItem(item, target, start);
+  }
+
+  const dragPayloadOf = (item: MediaItem): DragPayload =>
+    ({ name: item.name, kind: trackKindFor(item.kind), duration: roundTime(sourceDurationOf(item) ?? DEFAULT_IMAGE_DURATION) });
+
+  /** Arrastar da biblioteca (com o mouse): depois de 5 px vira arraste; ao soltar na timeline, entra ali. */
+  function beginLibraryDrag(event: ReactPointerEvent<HTMLDivElement>, item: MediaItem) {
+    if (event.button !== 0 || item.missing) return;
+    const startX = event.clientX, startY = event.clientY;
+    const payload = dragPayloadOf(item);
+    let floater: HTMLDivElement | null = null;
+    const move = (e: PointerEvent) => {
+      if (!floater && Math.hypot(e.clientX - startX, e.clientY - startY) < 5) return;
+      if (!floater) {
+        floater = document.createElement("div");
+        floater.className = "drag-floater";
+        floater.textContent = item.name;
+        document.body.appendChild(floater);
+        document.body.classList.add("dragging-media");
+      }
+      floater.style.transform = `translate(${e.clientX + 12}px, ${e.clientY + 10}px)`;
+      moveDrag(payload, e.clientX, e.clientY);
+    };
+    const stop = (e: PointerEvent, cancelled: boolean) => {
+      window.removeEventListener("pointermove", move);
+      window.removeEventListener("pointerup", up);
+      window.removeEventListener("pointercancel", cancel);
+      window.removeEventListener("keydown", escape);
+      if (!floater) return;
+      floater.remove();
+      document.body.classList.remove("dragging-media");
+      const spot = cancelled ? null : resolveDrop(e.clientX, e.clientY, payload);
+      endDrag();
+      // O clique que vem logo depois do arraste não deve selecionar nada.
+      const swallow = (click: MouseEvent) => { click.stopPropagation(); click.preventDefault(); };
+      window.addEventListener("click", swallow, { capture: true, once: true });
+      setTimeout(() => window.removeEventListener("click", swallow, { capture: true }), 0);
+      if (spot) dropMediaItem(item, spot.target, spot.start);
+    };
+    const up = (e: PointerEvent) => stop(e, false);
+    const cancel = (e: PointerEvent) => stop(e, true);
+    const escape = (e: KeyboardEvent) => { if (e.key === "Escape") stop(new PointerEvent("pointercancel"), true); };
+    window.addEventListener("pointermove", move);
+    window.addEventListener("pointerup", up);
+    window.addEventListener("pointercancel", cancel);
+    window.addEventListener("keydown", escape);
+  }
+
+  /**
+   * Arquivos arrastados das pastas do computador: entram na biblioteca; se soltos na timeline,
+   * também vão para lá, um depois do outro, a partir do ponto onde foram soltos. Pastas: os arquivos de mídia de dentro.
+   */
+  async function dropFiles(paths: string[], spot: DropSpot | null) {
+    const expanded: string[] = [];
+    for (const path of paths) {
+      if (kindFromFileName(fileNameOf(path)) !== "other") expanded.push(path);
+      else {
+        try { expanded.push(...await invoke<string[]>("list_media_files", { folder: path })); } catch { /* não é pasta nem mídia */ }
+      }
+    }
+    if (!expanded.length) { setNotice("Nenhum arquivo de vídeo, imagem ou áudio entre os que foram soltos."); return; }
+    const additions = await importPaths(expanded);
+    if (!spot) return;
+    const durations = await loadMediaDurations(additions);
+    const byPath = new Map([...media, ...additions].filter((item) => item.path).map((item) => [item.path!.toLowerCase(), item]));
+    const spotKind: TrackKind | undefined = spot.target === "video" || spot.target === "audio" ? spot.target
+      : timelineRef.current.tracks.find((track) => track.id === spot.target)?.kind;
+    let target = spot.target, start = spot.start, placed = 0, skipped = 0;
+    for (const path of expanded) {
+      const item = byPath.get(path.toLowerCase());
+      if (!item || item.missing) continue;
+      if (trackKindFor(item.kind) !== spotKind) { skipped++; continue; }
+      const duration = item.kind === "image" ? DEFAULT_IMAGE_DURATION : durations.get(item.id) ?? item.duration ?? DEFAULT_IMAGE_DURATION;
+      const used = dropMediaItem(item, target, start, duration);
+      if (!used) continue;
+      target = used;
+      start = roundTime(start + duration);
+      placed++;
+    }
+    if (placed > 1 || skipped) setNotice(`${placed} arquivo(s) colocado(s) na timeline${skipped ? `; ${skipped} de outro tipo ficaram só na biblioteca` : ""}.`);
+  }
+  const dropFilesRef = useRef(dropFiles);
+  dropFilesRef.current = dropFiles;
+  const screenRef = useRef(screen);
+  screenRef.current = screen;
+
+  // Arrastar arquivos do Windows para dentro da janela (o Tauri informa os caminhos e a posição).
+  const [filesOver, setFilesOver] = useState(false);
+  useEffect(() => {
+    if (!inTauri()) return;
+    let payload: DragPayload | null = null;
+    const off = getCurrentWebview().onDragDropEvent((event) => {
+      const data = event.payload;
+      const ratio = window.devicePixelRatio || 1;
+      if (data.type === "enter") {
+        const first = data.paths.find((path) => kindFromFileName(fileNameOf(path)) !== "other") ?? data.paths[0];
+        const kind = first ? kindFromFileName(fileNameOf(first)) : "other";
+        payload = { name: `${first ? fileNameOf(first) : "arquivos"}${data.paths.length > 1 ? ` +${data.paths.length - 1}` : ""}`,
+          kind: kind === "audio" ? "audio" : "video", duration: DEFAULT_IMAGE_DURATION };
+      }
+      if (data.type === "enter" || data.type === "over") {
+        setFilesOver(true);
+        if (payload && screenRef.current === "editor") moveDrag(payload, data.position.x / ratio, data.position.y / ratio);
+      } else if (data.type === "drop") {
+        const spot = payload && screenRef.current === "editor" ? resolveDrop(data.position.x / ratio, data.position.y / ratio, payload) : null;
+        endDrag();
+        setFilesOver(false);
+        payload = null;
+        if (screenRef.current !== "editor") { setNotice("Crie ou abra um projeto e solte os arquivos nele."); return; }
+        void dropFilesRef.current(data.paths, spot);
+      } else {
+        endDrag();
+        setFilesOver(false);
+        payload = null;
+      }
+    });
+    return () => { void off.then((unlisten) => unlisten()); };
+  }, []);
 
   /** Muda posição/duração sem sobrescrever (aparas e o campo de duração já respeitam os vizinhos). */
   function updateClip(clipId: string, change: Partial<ClipGeometry>) {
@@ -1124,14 +1303,16 @@ export default function App() {
           </div>
           <div className="asset-list">
             {media.length === 0 ? <div className="empty-library"><FolderPlus size={25} /><strong>Sua biblioteca está vazia</strong><span>Importe arquivos para começar a montar seu vídeo.</span></div> :
-              media.map((item) => <div key={item.id} className={`asset-row ${selectedId === item.id ? "selected" : ""}`}>
+              media.map((item) => <div key={item.id} className={`asset-row ${selectedId === item.id ? "selected" : ""}`}
+                title={item.missing ? undefined : "Arraste para a timeline para colocar onde quiser"}
+                onPointerDown={(event) => beginLibraryDrag(event, item)}>
                 <button className="asset-main" onClick={() => selectLibraryItem(item)}>
                   <div className="asset-thumb">
                     {item.kind === "image" ? <img src={item.url} /> : item.kind === "video" ? <Video size={18} /> : <AudioLines size={18} />}
                   </div>
                   <div className="asset-info"><strong title={item.name}>{item.name}</strong><span>{item.kind.toUpperCase()} · {formatSize(item.size)}</span></div>
                 </button>
-                <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>{item.missing && <button className="asset-add" title="Relinkar arquivo" onClick={() => relinkMedia(item)}><FolderOpen size={14} /></button>}
+                <button className="asset-add" title="Adicionar à timeline" onClick={() => addToTimeline(item)}><Plus size={15} /></button>{item.kind !== "audio" && <button className="asset-add" title="Sobreposição: no playhead, por cima do vídeo" onClick={() => addAsOverlay(item)}><Layers size={14} /></button>}{item.missing && <button className="asset-add" title="Relinkar arquivo" onClick={() => relinkMedia(item)}><FolderOpen size={14} /></button>}
                 <button className="asset-remove" title="Remover" onClick={() => removeMedia(item)}><X size={14} /></button>
               </div>)
             }
@@ -1213,6 +1394,7 @@ export default function App() {
             onUpdateClipAudio={updateClipAudio}
             onSetTrackVolume={setTrackVolume}
             onMoveClip={moveClip}
+            onDropMedia={dropMedia}
             onRemoveClip={removeClip}
             onPlayheadChange={movePlayhead}
             onNotice={setNotice}
@@ -1232,6 +1414,8 @@ export default function App() {
             {selected.duration ? <div className="property-line"><span>Duração</span><b>{formatSeconds(selected.duration)}s</b></div> : null}
             <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
             <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
+            {selected.kind !== "audio" && <button className="button secondary full overlay-add" onClick={() => addAsOverlay(selected)}
+              title="Coloca no playhead, numa trilha por cima, menor e centralizada (PNG, GIF, logo, vídeo…)"><Layers size={15} /> Sobreposição no playhead</button>}
           </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}
           {selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" && <EffectsPanel clip={selectedClip} locked={isLocked(selectedClip.trackId)}
             imageClipCount={clips.filter((clip) => mediaOf(clip.mediaId)?.kind === "image").length}
@@ -1248,6 +1432,7 @@ export default function App() {
       </main>
       <footer className="statusbar"><span><i className="status-dot" /> {notice}</span><span>Social Video Editor · v{appVersion} · Projeto local</span></footer>
       {unsavedDialog}
+      {filesOver && <div className="files-over-hint">Solte os arquivos: em qualquer lugar entram na biblioteca; numa trilha da timeline, já entram no ponto onde soltar.</div>}
       {exportOpen && <ExportDialog state={timeline} media={media} captionStyle={captionStyle} ratio={ratio} projectName={projectName}
         onClose={() => setExportOpen(false)} onNotice={setNotice} />}
       {assemblyOpen && <AssemblyDialog media={media} timelineHasClips={clips.length > 0} onClose={() => setAssemblyOpen(false)} onApply={applyAssembly} />}

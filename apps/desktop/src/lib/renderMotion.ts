@@ -99,11 +99,21 @@ export function motionFilters(
   let tail = `[bg${id}][sc${id}]overlay=x='(W-w)/2+W*${expr.x}':y='(H-h)/2+H*${expr.y}':eval=frame:shortest=1`;
   if (factor !== 1) tail += `,scale=${width}:${height}:flags=area`;
   tail += ",setsar=1";
-  // Opacidade = misturar com o preto: luma e cor multiplicadas por k (vídeo em faixa limitada).
-  if (expr.fades) {
-    const k = expr.opacity;
-    tail += `,eq=contrast='${k}':brightness='0.4375*(${k}-1)':saturation='${k}':eval=frame`;
-  }
+  // A opacidade (fade) não entra aqui: é aplicada ao sobrepor (fadeBlend), revelando as camadas de baixo.
   chains.push(`${tail}[${output}]`);
   return chains;
+}
+
+/**
+ * Fade de uma camada sobre o que já está montado embaixo: mistura "com a camada" e "sem ela"
+ * na proporção da opacidade, só nos trechos de entrada/saída (fora deles, a camada fica inteira).
+ * `opacity` usa `t` = segundos desde o início do clipe; aqui vira o tempo da timeline (T − início).
+ */
+export function fadeBlend(opacity: string, start: number, windows: [number, number][]): { expr: string; enable: string } {
+  const local = `(T-${n(start)})`;
+  const k = opacity.replace(/\bt\b/g, local);
+  return {
+    expr: `A*(${k})+B*(1-(${k}))`,
+    enable: windows.map(([a, b]) => `between(t,${n(a)},${n(b)})`).join("+"),
+  };
 }

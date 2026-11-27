@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { clipTransformExpr, motionFilters } from "./renderMotion";
+import { clipTransformExpr, fadeBlend, motionFilters } from "./renderMotion";
 import { clipAnimationAt, makeAnimation } from "./animations";
 import { clipFrameAt, makeMotion, sliceMotion } from "./effects";
 import type { AnimationType, TimelineClip } from "../types";
@@ -53,7 +53,7 @@ describe("movimento na exportação = preview", () => {
       expectSame(base({ animIn: makeAnimation(type, 3), animOut: makeAnimation(type, 3) })); // encurtadas para caber
     });
   }
-  it("filtros: fonte preta, escala por quadro, redução e mistura com preto", () => {
+  it("filtros: fundo transparente, escala por quadro e redução (o fade fica para a mistura)", () => {
     const expr = clipTransformExpr(base({ animIn: makeAnimation("fade", 0.5), motion: makeMotion("zoom-in")! }))!;
     const chains = motionFilters(expr, "f0", "m0", "0", { width: 1080, height: 1920, fps: 30, length: 4, factor: 2 });
     expect(chains[0]).toBe("color=c=black@0:s=2160x3840:r=30:d=4,format=yuva420p[bg0]");
@@ -61,12 +61,25 @@ describe("movimento na exportação = preview", () => {
     expect(chains[1]).toContain(":eval=frame");
     expect(chains[2]).toContain("overlay=x='(W-w)/2+W*");
     expect(chains[2]).toContain("scale=1080:1920:flags=area");
-    expect(chains[2]).toContain("eq=contrast=");
+    expect(chains[2]).not.toContain("eq=");
     expect(chains[2]).toMatch(/\[m0\]$/);
   });
   it("sem fade não mexe nas cores", () => {
     const expr = clipTransformExpr(base({ animIn: makeAnimation("slide-left", 0.5) }))!;
     expect(expr.fades).toBe(false);
     expect(motionFilters(expr, "f", "m", "1", { width: 720, height: 1280, fps: 30, length: 4, factor: 1 }).join(";")).not.toContain("eq=");
+  });
+  it("fade: mistura com as camadas de baixo, no tempo da timeline", () => {
+    const clip = base({ animIn: makeAnimation("fade", 0.5), animOut: makeAnimation("fade", 0.4) });
+    const expr = clipTransformExpr(clip)!;
+    const blend = fadeBlend(expr.opacity, clip.start, [[7, 7.5], [10.6, 11]]);
+    expect(blend.enable).toBe("between(t,7,7.5)+between(t,10.6,11)");
+    // k(T), com T = tempo da timeline, deve ser a opacidade do preview nesse instante.
+    const k = blend.expr.match(/^A\*\((.*)\)\+B\*\(1-\(/)![1];
+    expect(k).not.toMatch(/\bt\b/);
+    for (const T of [7, 7.1, 7.3, 7.5, 9, 10.7, 10.9]) {
+      // evaluate() usa a variável `t`; aqui a expressão já usa `T` (tempo da timeline).
+      expect(evaluate(k.replace(/\bT\b/g, "t"), T), `T=${T}`).toBeCloseTo(clipAnimationAt(clip, T).opacity, 3);
+    }
   });
 });
