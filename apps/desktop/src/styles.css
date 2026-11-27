@@ -269,3 +269,17 @@
 body.dragging-media, body.dragging-media * { cursor: grabbing !important; user-select: none; }
 .asset-row { touch-action: none; }
 .files-over-hint { position: fixed; left: 50%; top: 14px; transform: translateX(-50%); z-index: 9998; pointer-events: none; padding: 9px 16px; border-radius: 9px; background: #18181fee; border: 1px dashed #f472b6; color: #fce7f3; font-size: 12px; box-shadow: 0 8px 24px #000a; }
+/* Painéis redimensionáveis: divisórias entre as colunas e entre o preview e a timeline */
+.workspace.resizable { grid-template-columns: var(--left-w, 260px) 6px minmax(360px, 1fr) 6px var(--right-w, 250px); column-gap: 3px; }
+.workspace.resizable .center-column { gap: 0; }
+.center-column .timeline-panel { flex: 0 0 var(--timeline-h, 46%); height: auto; }
+.splitter { position: relative; z-index: 5; touch-action: none; }
+.splitter.vertical { cursor: col-resize; }
+.splitter.horizontal { cursor: row-resize; height: 12px; flex: none; }
+.splitter::after { content: ""; position: absolute; border-radius: 3px; background: transparent; transition: background .12s; }
+.splitter.vertical::after { left: 2px; right: 2px; top: 30%; bottom: 30%; }
+.splitter.horizontal::after { top: 5px; bottom: 5px; left: 30%; right: 30%; }
+.splitter:hover::after, .splitter:active::after { background: #ec4899aa; }
+body.resizing-x, body.resizing-x * { cursor: col-resize !important; user-select: none; }
+body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select: none; }
+@media (max-width: 1150px) { .workspace.resizable { grid-template-columns: var(--left-w, 225px) 6px minmax(360px, 1fr) 6px var(--right-w, 215px); } }

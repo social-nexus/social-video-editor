@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { PointerEvent as ReactPointerEvent, CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers } from "lucide-react";
@@ -24,6 +24,8 @@ import ProgramMonitor from "./components/ProgramMonitor";
 import AssemblyDialog from "./components/AssemblyDialog";
 import ExportDialog from "./components/ExportDialog";
 import StartScreen from "./components/StartScreen";
+import Splitter from "./components/Splitter";
+import { clampSide, clampTimeline, loadLayout, saveLayout, type PanelLayout } from "./lib/layout";
 import UnsavedDialog from "./components/UnsavedDialog";
 import { isIdentity, validPlacement } from "./lib/placement";
 import { endDrag, moveDrag, resolveDrop, type DragPayload, type DropSpot } from "./lib/dragMedia";
@@ -74,6 +76,47 @@ export default function App() {
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
   const [assemblyOpen, setAssemblyOpen] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
+  /** Tamanhos dos painéis (divisórias arrastáveis), guardados neste computador. */
+  const [layout, setLayout] = useState<PanelLayout>(() => loadLayout());
+  const layoutRef = useRef(layout);
+  layoutRef.current = layout;
+  const workspaceRef = useRef<HTMLElement>(null);
+  const centerRef = useRef<HTMLElement>(null);
+  /** Tamanho de cada painel no começo do arraste da divisória. */
+  const resizeStart = useRef<{ left: number; right: number; timeline: number } | null>(null);
+
+  function measurePanels() {
+    const workspace = workspaceRef.current, center = centerRef.current;
+    const left = workspace?.querySelector<HTMLElement>(".media-panel")?.offsetWidth ?? 260;
+    const right = workspace?.querySelector<HTMLElement>(".properties-panel")?.offsetWidth ?? 250;
+    const timeline = center?.querySelector<HTMLElement>(".timeline-panel")?.offsetHeight ?? 300;
+    return { left, right, timeline };
+  }
+  function resizePanel(which: keyof PanelLayout, delta: number) {
+    resizeStart.current ??= measurePanels();
+    const start = resizeStart.current;
+    const workspaceWidth = workspaceRef.current?.clientWidth ?? 1400;
+    const columnHeight = centerRef.current?.clientHeight ?? 700;
+    setLayout((current) => ({
+      ...current,
+      ...(which === "left" ? { left: clampSide("left", start.left + delta, workspaceWidth, current.right ?? start.right) } : {}),
+      ...(which === "right" ? { right: clampSide("right", start.right - delta, workspaceWidth, current.left ?? start.left) } : {}),
+      ...(which === "timeline" ? { timeline: clampTimeline(start.timeline - delta, columnHeight) } : {}),
+    }));
+  }
+  function finishResize() {
+    resizeStart.current = null;
+    saveLayout(layoutRef.current);
+  }
+  function resetPanel(which: keyof PanelLayout) {
+    setLayout((current) => { const next = { ...current, [which]: null }; saveLayout(next); return next; });
+  }
+  const layoutVars = {
+    ...(layout.left ? { "--left-w": `${layout.left}px` } : {}),
+    ...(layout.right ? { "--right-w": `${layout.right}px` } : {}),
+    ...(layout.timeline ? { "--timeline-h": `${layout.timeline}px` } : {}),
+  } as CSSProperties;
+
   /** Depois de arrastar uma legenda: aplicar só nela ou em todas? */
   const [captionMoveChoice, setCaptionMoveChoice] = useState<{ captionId: string; x: number; y: number } | null>(null);
   /** Tela inicial ou editor. */
@@ -1281,7 +1324,7 @@ export default function App() {
         </div>
       </header>
 
-      <main className="workspace">
+      <main className="workspace resizable" ref={workspaceRef} style={layoutVars}>
         <aside className="media-panel panel">
           <div className="panel-heading">
             <div><span className="eyebrow">SEU PROJETO</span><h2>Biblioteca</h2></div>
@@ -1319,8 +1362,9 @@ export default function App() {
           </div>
           <div className="panel-foot"><Layers3 size={14} /> {media.length} itens na biblioteca</div>
         </aside>
+        <Splitter orientation="vertical" label="Largura da biblioteca" onDrag={(delta) => resizePanel("left", delta)} onEnd={finishResize} onReset={() => resetPanel("left")} />
 
-        <section className="center-column">
+        <section className="center-column" ref={centerRef}>
           <div className="preview-panel panel">
             <div className="panel-heading preview-heading">
               <div><span className="eyebrow">MONITOR DE VÍDEO</span><h2>Pré-visualização</h2></div>
@@ -1364,6 +1408,7 @@ export default function App() {
               : <div className="preview-transport"><button className="button secondary compact" onClick={togglePreviewPlayback} disabled={selected?.kind !== "video"}>{previewPlaying ? "⏸ Pausar" : "▶ Reproduzir"}</button><span className="preview-time">{previewTime.toFixed(1)}s / {previewDuration.toFixed(1)}s</span><input aria-label="Posição do vídeo" type="range" min={0} max={Math.max(0, previewDuration)} step={0.1} value={Math.min(previewTime, previewDuration)} onChange={(event) => seekPreview(Number(event.target.value))} disabled={selected?.kind !== "video" || !previewDuration} /></div>}
             <div className="preview-bottom"><span>{previewMode === "program" ? "Montagem da timeline" : selected ? selected.name : "Nenhuma mídia selecionada"}</span><span>Proporção <b>{ratio}</b></span></div>
           </div>
+          <Splitter orientation="horizontal" label="Altura da timeline" onDrag={(delta) => resizePanel("timeline", delta)} onEnd={finishResize} onReset={() => resetPanel("timeline")} />
 
           <Timeline
             media={media}
@@ -1403,6 +1448,7 @@ export default function App() {
             onToggleTrack={toggleTrack}
           />
         </section>
+        <Splitter orientation="vertical" label="Largura das propriedades" onDrag={(delta) => resizePanel("right", delta)} onEnd={finishResize} onReset={() => resetPanel("right")} />
 
         <aside className="properties-panel panel">
           <div className="panel-heading"><div><span className="eyebrow">AJUSTES</span><h2>Propriedades</h2></div><Settings2 size={17} className="muted-icon" /></div>
