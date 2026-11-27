@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyClipDrag, clampClipDuration, nearestSnap, rulerStep, snapTargetsFor } from "./timeline";
+import { applyClipDrag, clampClipDuration, nearestSnap, rulerStep, snapTargetsFor, splitClip } from "./timeline";
 import { formatTimecode, parseSeconds } from "./time";
 import type { TimelineClip } from "../types";
 
@@ -97,5 +97,20 @@ describe("applyClipDrag com vizinhos", () => {
   it("aparar o início para no clipe anterior", () => {
     const image = { start: 5, duration: 5, inPoint: 0 };
     expect(applyClipDrag("trim-start", image, -10, { sourceDuration: null, ...noSnap, minStart: 3 })).toEqual({ start: 3, duration: 7, inPoint: 0 });
+  });
+});
+
+describe("velocidade", () => {
+  it("clipe a 50% pode durar o dobro da mídia", () => {
+    expect(clampClipDuration({ inPoint: 0, speed: 0.5 }, 4, 20)).toBe(8);
+  });
+  it("aparar o início a 50% avança metade na mídia", () => {
+    const result = applyClipDrag("trim-start", { start: 10, duration: 8, inPoint: 0 }, 2,
+      { sourceDuration: 4, snapTargets: [], snapThreshold: 0, speed: 0.5 });
+    expect(result).toEqual({ start: 12, duration: 6, inPoint: 1 });
+  });
+  it("dividir a 50% continua a mídia do ponto certo", () => {
+    const parts = splitClip({ id: "a", mediaId: "m", trackId: "t", start: 0, duration: 8, inPoint: 0, speed: 0.5 }, 4, "b", true);
+    expect(parts![1]).toMatchObject({ start: 4, duration: 4, inPoint: 2, speed: 0.5 });
   });
 });

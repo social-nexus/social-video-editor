@@ -42,11 +42,37 @@ fn media_file_info(app: tauri::AppHandle, paths: Vec<String>) -> Vec<MediaFileIn
     }).collect()
 }
 
+const MEDIA_EXTENSIONS: &[&str] = &[
+    "mp4", "mov", "mkv", "webm", "avi", "m4v",
+    "jpg", "jpeg", "png", "webp", "gif", "bmp",
+    "mp3", "wav", "m4a", "aac", "flac", "ogg",
+];
+
+/// Lista os arquivos de mídia de uma pasta (sem entrar em subpastas), em ordem de nome.
+#[tauri::command]
+fn list_media_files(folder: String) -> Result<Vec<String>, String> {
+    let entries = fs::read_dir(&folder)
+        .map_err(|error| format!("Não foi possível ler a pasta: {error}"))?;
+    let mut files: Vec<String> = entries
+        .filter_map(|entry| entry.ok().map(|entry| entry.path()))
+        .filter(|path| path.is_file())
+        .filter(|path| {
+            path.extension()
+                .and_then(|ext| ext.to_str())
+                .map(|ext| MEDIA_EXTENSIONS.contains(&ext.to_lowercase().as_str()))
+                .unwrap_or(false)
+        })
+        .map(|path| path.to_string_lossy().into_owned())
+        .collect();
+    files.sort_by_key(|path| path.to_lowercase());
+    Ok(files)
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .invoke_handler(tauri::generate_handler![app_version, save_project_file, read_project_file, media_file_info])
+        .invoke_handler(tauri::generate_handler![app_version, save_project_file, read_project_file, media_file_info, list_media_files])
         .run(tauri::generate_context!())
         .expect("erro ao iniciar Social Video Editor");
 }

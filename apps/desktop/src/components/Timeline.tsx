@@ -7,7 +7,7 @@ import {
 import type { ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
 import { formatSeconds, formatTimecode, parseSeconds, roundTime } from "../lib/time";
 import {
-  applyClipDrag, clampClipDuration, clipEnd, maxClipDuration, rulerStep, snapTargetsFor, sourceDurationOf,
+  applyClipDrag, clampClipDuration, clipEnd, clipSpeed, maxClipDuration, rulerStep, snapTargetsFor, sourceDurationOf,
   type DragMode,
 } from "../lib/timeline";
 import { freeBounds, trackKindFor, trackLabel } from "../lib/tracks";
@@ -28,6 +28,7 @@ type DragState = {
   startX: number;
   moved: boolean;
   original: ClipGeometry;
+  speed: number;
   preview: ClipGeometry;
   /** Trilha onde o clipe está sendo arrastado (muda ao mover para cima/baixo). */
   trackId: string;
@@ -133,7 +134,7 @@ export default function Timeline(props: Props) {
       trackId: clip.trackId, trackKind: track?.kind ?? trackKindFor(mediaById.get(clip.mediaId)?.kind ?? "video"),
       sourceDuration: sourceDurationOf(mediaById.get(clip.mediaId)),
       snapTargets: snapTargetsFor(clip.id, clips, playhead),
-      minStart: bounds.minStart, maxEnd: bounds.maxEnd,
+      minStart: bounds.minStart, maxEnd: bounds.maxEnd, speed: clipSpeed(clip),
     };
     dragRef.current = state;
     setDrag(state);
@@ -159,7 +160,7 @@ export default function Timeline(props: Props) {
       const preview = applyClipDrag(current.mode, current.original, dx / pps, {
         sourceDuration: current.sourceDuration, snapTargets: current.snapTargets,
         snapThreshold: event.altKey ? 0 : SNAP_PX / pps,
-        minStart: current.minStart, maxEnd: current.maxEnd,
+        minStart: current.minStart, maxEnd: current.maxEnd, speed: current.speed,
       });
       dragRef.current = { ...current, moved: true, preview, trackId };
       setDrag(dragRef.current);
@@ -303,6 +304,7 @@ export default function Timeline(props: Props) {
       {!locked && <div className="clip-handle start" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-start")} />}
       {!narrow && (audio ? <AudioLines size={13} /> : <Film size={13} />)}
       {!narrow && <span>{item?.name ?? (audio ? "Áudio" : "Mídia não vinculada")}</span>}
+      {!narrow && clipSpeed(clip) !== 1 && <em className="clip-speed" title="Velocidade do clipe">{Math.round(clipSpeed(clip) * 100)}%</em>}
       {!narrow && !locked && <button title="Remover clipe" onPointerDown={(event) => event.stopPropagation()}
         onClick={(event) => { event.stopPropagation(); props.onRemoveClip(clip.id); }}><X size={12} /></button>}
       {!locked && <div className="clip-handle end" style={{ width: handleWidth }} onPointerDown={(event) => beginDrag(event, clip, "trim-end")} />}
@@ -364,6 +366,7 @@ export default function Timeline(props: Props) {
               if (event.key === "Escape") { setDurationDraft(formatSeconds(selectedClip.duration)); event.currentTarget.blur(); }
             }} />s</label>
           {selectedSource !== null && <span className="clip-edit-hint">máx. {formatSeconds(maxClipDuration(selectedClip, selectedSource))}s</span>}
+          {clipSpeed(selectedClip) !== 1 && <span className="clip-edit-hint">velocidade {Math.round(clipSpeed(selectedClip) * 100)}%</span>}
           {selectedClip.inPoint > 0 && <span className="clip-edit-hint">entrada na mídia {formatSeconds(selectedClip.inPoint)}s</span>}
           <button className="button secondary compact" title="Remover clipe da timeline" onClick={() => props.onRemoveClip(selectedClip.id)}><X size={12} /> Remover</button>
         </>}

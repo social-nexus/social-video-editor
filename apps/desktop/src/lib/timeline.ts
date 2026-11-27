@@ -1,6 +1,9 @@
 import type { ClipGeometry, MediaItem, TimelineClip } from "../types";
 import { MIN_CLIP_DURATION, roundTime } from "./time";
 
+/** Velocidade do clipe (1 quando não definida). */
+export const clipSpeed = (clip: { speed?: number }) => clip.speed && clip.speed > 0 ? clip.speed : 1;
+
 export const clipEnd = (clip: Pick<TimelineClip, "start" | "duration">) => clip.start + clip.duration;
 
 /** Duração da mídia de origem que limita o clipe, ou null quando não há limite (imagem / desconhecida). */
@@ -9,11 +12,11 @@ export function sourceDurationOf(item: MediaItem | null | undefined): number | n
 }
 
 /** Duração máxima do clipe: o que resta da mídia depois do ponto de entrada. */
-export function maxClipDuration(clip: Pick<TimelineClip, "inPoint">, sourceDuration: number | null) {
-  return sourceDuration === null ? Infinity : Math.max(MIN_CLIP_DURATION, sourceDuration - clip.inPoint);
+export function maxClipDuration(clip: Pick<TimelineClip, "inPoint" | "speed">, sourceDuration: number | null) {
+  return sourceDuration === null ? Infinity : Math.max(MIN_CLIP_DURATION, (sourceDuration - clip.inPoint) / clipSpeed(clip));
 }
 
-export function clampClipDuration(clip: Pick<TimelineClip, "inPoint">, sourceDuration: number | null, value: number) {
+export function clampClipDuration(clip: Pick<TimelineClip, "inPoint" | "speed">, sourceDuration: number | null, value: number) {
   return roundTime(Math.min(maxClipDuration(clip, sourceDuration), Math.max(MIN_CLIP_DURATION, value)));
 }
 
@@ -46,6 +49,8 @@ export type DragOptions = {
   /** Ao aparar: até onde o início pode recuar / o fim pode avançar sem invadir o vizinho. */
   minStart?: number;
   maxEnd?: number;
+  /** Velocidade do clipe (mídia consumida = duração × velocidade). */
+  speed?: number;
 };
 
 /**
@@ -56,6 +61,7 @@ export type DragOptions = {
  */
 export function applyClipDrag(mode: DragMode, original: ClipGeometry, delta: number, options: DragOptions): ClipGeometry {
   const { sourceDuration, snapTargets, snapThreshold, minStart = 0, maxEnd = Infinity } = options;
+  const speed = clipSpeed(options);
 
   if (mode === "move") {
     let start = Math.max(0, original.start + delta);
@@ -72,7 +78,7 @@ export function applyClipDrag(mode: DragMode, original: ClipGeometry, delta: num
     const snapped = nearestSnap(end, snapTargets, snapThreshold);
     if (snapped !== null) end = snapped;
     end = Math.min(end, Math.max(maxEnd, clipEnd(original)));
-    return { ...original, duration: clampClipDuration(original, sourceDuration, end - original.start) };
+    return { ...original, duration: clampClipDuration({ inPoint: original.inPoint, speed }, sourceDuration, end - original.start) };
   }
 
   // trim-start: o fim fica parado.
@@ -81,9 +87,9 @@ export function applyClipDrag(mode: DragMode, original: ClipGeometry, delta: num
   const snapped = nearestSnap(start, snapTargets, snapThreshold);
   if (snapped !== null) start = snapped;
   // Não pode voltar antes do começo da mídia de origem (imagens não têm esse limite).
-  const earliest = Math.max(minStart > original.start ? 0 : minStart, sourceDuration === null ? 0 : original.start - original.inPoint, 0);
+  const earliest = Math.max(minStart > original.start ? 0 : minStart, sourceDuration === null ? 0 : original.start - original.inPoint / speed, 0);
   start = Math.min(Math.max(start, earliest), end - MIN_CLIP_DURATION);
-  const inPoint = sourceDuration === null ? 0 : Math.max(0, original.inPoint + (start - original.start));
+  const inPoint = sourceDuration === null ? 0 : Math.max(0, original.inPoint + (start - original.start) * speed);
   return { start: roundTime(start), duration: roundTime(end - start), inPoint: roundTime(inPoint) };
 }
 
@@ -99,7 +105,7 @@ export function splitClip(clip: TimelineClip, at: number, newId: string, hasSour
   const first: TimelineClip = { ...clip, duration: firstDuration };
   const second: TimelineClip = {
     ...clip, id: newId, start: cut, duration: roundTime(clipEnd(clip) - cut),
-    inPoint: hasSource ? roundTime(clip.inPoint + firstDuration) : 0,
+    inPoint: hasSource ? roundTime(clip.inPoint + firstDuration * clipSpeed(clip)) : 0,
   };
   return [first, second];
 }

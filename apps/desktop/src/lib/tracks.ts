@@ -1,6 +1,6 @@
 import type { MediaKind, TimelineClip, Track, TrackKind } from "../types";
 import { MIN_CLIP_DURATION, roundTime } from "./time";
-import { clipEnd } from "./timeline";
+import { clipEnd, clipSpeed } from "./timeline";
 
 export const trackKindFor = (kind: MediaKind): TrackKind => kind === "audio" ? "audio" : "video";
 
@@ -65,7 +65,7 @@ export function overwriteRange(
         id: clipStart < start ? newId() : clip.id,
         start: roundTime(end),
         duration: roundTime(clipStop - end),
-        inPoint: hasSource(clip) ? roundTime(clip.inPoint + cut) : 0,
+        inPoint: hasSource(clip) ? roundTime(clip.inPoint + cut * clipSpeed(clip)) : 0,
       });
     }
   }

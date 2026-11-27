@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke, convertFileSrc } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
 import {
-  AudioLines, Clapperboard, FolderOpen, FolderPlus, Image as ImageIcon,
+  AudioLines, Clapperboard, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon,
   Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
@@ -14,6 +14,8 @@ import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, tra
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline, { type TrackFlag } from "./components/Timeline";
 import ProgramMonitor from "./components/ProgramMonitor";
+import AssemblyDialog from "./components/AssemblyDialog";
+import type { AssemblyPlan } from "./lib/autoassemble";
 
 type FileInfo = { exists: boolean; size: number };
 type PreviewMode = "program" | "source";
@@ -38,6 +40,7 @@ export default function App() {
   const [ratio, setRatio] = useState("9:16");
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
+  const [assemblyOpen, setAssemblyOpen] = useState(false);
   const { tracks, clips } = timeline;
 
   // Histórico de edições da timeline (trilhas + clipes). Os refs guardam o valor mais recente
@@ -93,22 +96,47 @@ export default function App() {
     setMedia((current) => current.map((entry) => durations.has(entry.id) ? { ...entry, duration: durations.get(entry.id) } : entry));
   }
 
+  /** Adiciona arquivos do disco à biblioteca, pulando os que já estão nela. Retorna quantos entraram. */
+  async function importPaths(paths: string[]) {
+    const known = new Set(media.map((item) => item.path?.toLowerCase()).filter(Boolean));
+    const fresh = paths.filter((path) => !known.has(path.toLowerCase()));
+    const repeated = paths.length - fresh.length;
+    if (!fresh.length) {
+      setNotice(repeated ? "Esses arquivos já estão na biblioteca." : "Nenhum arquivo de mídia compatível encontrado.");
+      return 0;
+    }
+    const info = await invoke<FileInfo[]>("media_file_info", { paths: fresh });
+    const additions: MediaItem[] = fresh.map((mediaPath, index) => {
+      const name = fileNameOf(mediaPath);
+      return { id: crypto.randomUUID(), file: null, path: mediaPath, url: convertFileSrc(mediaPath), name, kind: kindFromFileName(name),
+        size: info[index]?.size ?? 0, missing: !info[index]?.exists, duration: null };
+    }).filter((item) => item.kind !== "other");
+    if (!additions.length) { setNotice("Nenhum arquivo de mídia compatível selecionado."); return 0; }
+    setMedia((current) => [...current, ...additions]);
+    setSelectedId((current) => current ?? additions[0].id);
+    setNotice(`${additions.length} arquivo(s) importado(s)${repeated ? `; ${repeated} já estava(m) na biblioteca e foi(ram) ignorado(s)` : ""}.`);
+    void loadMediaDurations(additions);
+    return additions.length;
+  }
+
   async function importMediaFromDisk() {
     try {
       const paths = await open({ multiple: true, title: "Importar mídia", filters: [{ name: "Mídia", extensions: MEDIA_EXTENSIONS }] });
       if (!paths || typeof paths === "string") return;
-      const info = await invoke<FileInfo[]>("media_file_info", { paths });
-      const additions: MediaItem[] = paths.map((mediaPath, index) => {
-        const name = fileNameOf(mediaPath);
-        return { id: crypto.randomUUID(), file: null, path: mediaPath, url: convertFileSrc(mediaPath), name, kind: kindFromFileName(name),
-          size: info[index]?.size ?? 0, missing: !info[index]?.exists, duration: null };
-      }).filter((item) => item.kind !== "other");
-      if (!additions.length) { setNotice("Nenhum arquivo de mídia compatível selecionado."); return; }
-      setMedia((current) => [...current, ...additions]);
-      setSelectedId((current) => current ?? additions[0].id);
-      setNotice(additions.length + " arquivo(s) importado(s) com caminho vinculado.");
-      void loadMediaDurations(additions);
+      await importPaths(paths);
     } catch (error) { setNotice("Erro ao importar mídia: " + String(error)); }
+  }
+
+  /** Importa todos os arquivos de mídia de uma pasta e abre a montagem automática. */
+  async function importFolder() {
+    try {
+      const folder = await open({ directory: true, multiple: false, title: "Importar pasta de mídia" });
+      if (!folder || Array.isArray(folder)) return;
+      const paths = await invoke<string[]>("list_media_files", { folder });
+      if (!paths.length) { setNotice("Essa pasta não tem arquivos de vídeo, imagem ou áudio."); return; }
+      await importPaths(paths);
+      setAssemblyOpen(true);
+    } catch (error) { setNotice("Erro ao importar a pasta: " + String(error)); }
   }
 
   async function relinkMedia(item: MediaItem) {
@@ -385,8 +413,44 @@ export default function App() {
     editTimeline((state) => ({ ...state, tracks: state.tracks.map((track) => track.id === trackId ? { ...track, [flag]: !track[flag] } : track) }));
   }
 
+  // ---- Montagem automática -------------------------------------------------------
+  /** Coloca a montagem planejada na timeline como um único passo de desfazer. */
+  function applyAssembly(plan: AssemblyPlan, narration: MediaItem | null) {
+    editTimeline((state) => {
+      // Timeline vazia: usa V1/A1. Senão (ou se travadas): trilhas novas, sem tocar no que já existe.
+      const reuse = state.clips.length === 0;
+      let tracksNext = state.tracks;
+      const pickTrack = (kind: TrackKind) => {
+        const existing = reuse ? firstTrackFor(tracksNext, kind) : null;
+        if (existing) return existing;
+        const created = newTrack(kind);
+        tracksNext = [...tracksNext, created];
+        return created;
+      };
+      const videoTrack = pickTrack("video");
+      const added: TimelineClip[] = plan.clips.map((clip) => ({
+        id: crypto.randomUUID(), mediaId: clip.mediaId, trackId: videoTrack.id, start: clip.start, duration: clip.duration, inPoint: 0,
+        ...(clip.speed && clip.speed !== 1 ? { speed: clip.speed } : {}),
+      }));
+      if (narration?.duration) {
+        const audioTrack = pickTrack("audio");
+        added.push({ id: crypto.randomUUID(), mediaId: narration.id, trackId: audioTrack.id, start: 0, duration: roundTime(narration.duration), inPoint: 0 });
+      }
+      return { tracks: tracksNext, clips: [...state.clips, ...added] };
+    });
+    setAssemblyOpen(false);
+    setSelectedClipId(null);
+    setPlaying(false);
+    setPlayhead(0);
+    setPreviewMode("program");
+    const warnings = plan.issues.filter((issue) => issue.level === "warning").length;
+    setNotice(`Montagem pronta: ${plan.clips.length} arquivo(s)${narration ? " sincronizados com a narração" : ""}`
+      + `${plan.skipped.length ? `, ${plan.skipped.length} ignorado(s)` : ""}${warnings ? `, ${warnings} aviso(s)` : ""}. Ctrl+Z desfaz.`);
+  }
+
   // ---- Atalhos de teclado --------------------------------------------------------
   function handleShortcut(event: KeyboardEvent) {
+    if (assemblyOpen) return;
     const target = event.target;
     if (target instanceof Element && target.closest("input, textarea, select, [contenteditable='true']")) return;
     const ctrl = event.ctrlKey || event.metaKey;
@@ -514,13 +578,15 @@ export default function App() {
       const savedClips: any[] = Array.isArray(data.clips) ? data.clips : [];
       const restoredClips = savedClips.flatMap((clip): TimelineClip[] => {
         const start = Number(clip?.start), duration = Number(clip?.duration), inPoint = Number(clip?.inPoint ?? 0);
+        const speed = Number(clip?.speed ?? 1);
         const item = typeof clip?.mediaId === "string" ? mediaById.get(clip.mediaId) : undefined;
         if (!item || !Number.isFinite(start) || !Number.isFinite(duration) || duration <= 0) return [];
         const kind = trackKindFor(item.kind);
         const track = restoredTracks.find((entry) => entry.id === clip.trackId && entry.kind === kind)
           ?? restoredTracks.find((entry) => entry.kind === kind)!;
         return [{ id: typeof clip.id === "string" ? clip.id : crypto.randomUUID(), mediaId: item.id, trackId: track.id,
-          start: Math.max(0, start), duration, inPoint: Number.isFinite(inPoint) ? Math.max(0, inPoint) : 0 }];
+          start: Math.max(0, start), duration, inPoint: Number.isFinite(inPoint) ? Math.max(0, inPoint) : 0,
+          ...(Number.isFinite(speed) && speed > 0 && speed !== 1 ? { speed } : {}) }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
@@ -571,6 +637,10 @@ export default function App() {
             <span>Vídeos, imagens e áudios</span>
             <small>Selecione vários arquivos de uma vez</small>
           </button>
+          <div className="library-actions">
+            <button className="button secondary compact" onClick={importFolder} title="Importa todos os arquivos de mídia de uma pasta"><FolderInput size={14} /> Importar pasta</button>
+            <button className="button secondary compact" onClick={() => setAssemblyOpen(true)} disabled={!media.length} title="Monta a sequência pelos tempos nos nomes dos arquivos"><WandSparkles size={14} /> Montagem automática</button>
+          </div>
           <input ref={inputRef} hidden type="file" multiple accept="video/*,image/*,audio/*" onChange={(event) => event.target.files && importFiles(event.target.files)} />
           <div className="media-stats">
             <span><Video size={13} /> {mediaCount.video}</span><span><ImageIcon size={13} /> {mediaCount.image}</span><span><Music2 size={13} /> {mediaCount.audio}</span>
@@ -672,6 +742,7 @@ export default function App() {
         </aside>
       </main>
       <footer className="statusbar"><span><i className="status-dot" /> {notice}</span><span>Social Video Editor · v{appVersion} · Projeto local</span></footer>
+      {assemblyOpen && <AssemblyDialog media={media} timelineHasClips={clips.length > 0} onClose={() => setAssemblyOpen(false)} onApply={applyAssembly} />}
     </div>
   );
 }

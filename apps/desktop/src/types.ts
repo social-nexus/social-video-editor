@@ -37,6 +37,8 @@ export type TimelineClip = {
   duration: number;
   /** Ponto de entrada na mídia de origem, em segundos (quanto foi aparado do início). */
   inPoint: number;
+  /** Velocidade de reprodução (1 = normal, 0,5 = metade). Ausente = 1. */
+  speed?: number;
 };
 
 /** Parte do clipe que muda ao mover ou aparar. */

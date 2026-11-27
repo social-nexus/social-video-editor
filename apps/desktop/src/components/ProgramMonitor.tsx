@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef } from "react";
 import { MonitorPlay } from "lucide-react";
 import type { MediaItem, TimelineClip, Track } from "../types";
 import { clipsAt } from "../lib/tracks";
+import { clipSpeed } from "../lib/timeline";
 
 /** Tolerância de dessincronia antes de reposicionar a mídia (segundos). */
 const PAUSED_TOLERANCE = 0.04;
@@ -20,12 +21,14 @@ type SyncedMediaProps = {
 /** Um <video>/<audio> que segue o playhead da timeline (respeitando o ponto de entrada do clipe). */
 function SyncedMedia({ kind, url, clip, playhead, playing, muted, visible }: SyncedMediaProps) {
   const ref = useRef<HTMLVideoElement & HTMLAudioElement>(null);
-  const expected = Math.max(0, clip.inPoint + (playhead - clip.start));
+  const speed = clipSpeed(clip);
+  const expected = Math.max(0, clip.inPoint + (playhead - clip.start) * speed);
 
   useEffect(() => {
     const element = ref.current;
     if (!element) return;
     element.muted = muted;
+    if (element.playbackRate !== speed) element.playbackRate = speed;
     if (!playing) {
       if (!element.paused) element.pause();
       if (Math.abs(element.currentTime - expected) > PAUSED_TOLERANCE) element.currentTime = expected;
