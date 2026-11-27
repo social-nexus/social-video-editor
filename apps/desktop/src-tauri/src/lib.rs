@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::Path;
+use tauri::Manager;
 
 #[derive(serde::Serialize)]
 struct MediaFileInfo {
@@ -24,11 +25,18 @@ fn read_project_file(path: String) -> Result<String, String> {
         .map_err(|error| format!("Não foi possível abrir o projeto: {error}"))
 }
 
+/// Verifica os arquivos de mídia e libera cada arquivo existente no asset protocol,
+/// para que o preview funcione em qualquer drive (ex.: D:\), e não só nas pastas
+/// fixas do tauri.conf.json. Só libera arquivos individuais, nunca pastas inteiras.
 #[tauri::command]
-fn media_file_info(paths: Vec<String>) -> Vec<MediaFileInfo> {
+fn media_file_info(app: tauri::AppHandle, paths: Vec<String>) -> Vec<MediaFileInfo> {
+    let scope = app.asset_protocol_scope();
     paths.iter().map(|path| {
         match fs::metadata(Path::new(path)) {
-            Ok(metadata) if metadata.is_file() => MediaFileInfo { exists: true, size: metadata.len() },
+            Ok(metadata) if metadata.is_file() => {
+                let _ = scope.allow_file(path);
+                MediaFileInfo { exists: true, size: metadata.len() }
+            }
             _ => MediaFileInfo { exists: false, size: 0 },
         }
     }).collect()

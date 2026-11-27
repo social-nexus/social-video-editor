@@ -41,3 +41,9 @@ autosave/
 test-output/
 coverage/
 playwright-report/
+# Local test media (do not commit)
+IMG_VID_TESTE/
+
+# Generated build files
+*.tsbuildinfo
+apps/desktop/src-tauri/gen/schemas/

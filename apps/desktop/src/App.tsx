@@ -54,7 +54,7 @@ export default function App() {
 
   function importFiles(files: FileList | File[]) {
     const additions = Array.from(files).map((file) => ({
-      id: crypto.randomUUID(), file, url: URL.createObjectURL(file),
+      id: crypto.randomUUID(), file, path: null, url: URL.createObjectURL(file),
       name: file.name, kind: kindOf(file), size: file.size,
     })).filter((item) => item.kind !== "other");
     if (!additions.length) {
