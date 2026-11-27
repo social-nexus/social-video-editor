@@ -6,11 +6,14 @@ import {
   Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles,
   Video, WandSparkles, X, MonitorPlay
 } from "lucide-react";
-import type { ClipAudio, ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
+import type { Caption, CaptionStyle, ClipAudio, ClipGeometry, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
+import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
 import { clipEnd, sourceDurationOf, splitClip } from "./lib/timeline";
 import { clampFade, formatPercent } from "./lib/audio";
+import { formatCaptions, newCaptionAt, parseCaptions, shiftCaptions, sortCaptions, type CaptionFormat } from "./lib/captions";
+import CaptionsPanel, { CaptionOverlay } from "./components/CaptionsPanel";
 import { defaultTracks, firstTrackFor, freeBounds, newTrack, overwriteRange, trackEnd, trackKindFor } from "./lib/tracks";
 import { emptyHistory, mapHistory, record, redo, undo, type History } from "./lib/history";
 import Timeline, { type TrackFlag } from "./components/Timeline";
@@ -21,7 +24,11 @@ import type { AssemblyPlan } from "./lib/autoassemble";
 type FileInfo = { exists: boolean; size: number };
 type PreviewMode = "program" | "source";
 
-const timelineEndOf = (clips: TimelineClip[]) => clips.reduce((max, clip) => Math.max(max, clipEnd(clip)), 0);
+const timelineEndOf = (state: Pick<TimelineState, "clips" | "captions">) => Math.max(
+  state.clips.reduce((max, clip) => Math.max(max, clipEnd(clip)), 0),
+  state.captions.reduce((max, caption) => Math.max(max, caption.end), 0),
+);
+const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 export default function App() {
   const inputRef = useRef<HTMLInputElement>(null);
@@ -32,7 +39,10 @@ export default function App() {
   const [previewMode, setPreviewMode] = useState<PreviewMode>("program");
   const [media, setMedia] = useState<MediaItem[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
-  const [timeline, setTimeline] = useState<TimelineState>(() => ({ tracks: defaultTracks(), clips: [] }));
+  const [timeline, setTimeline] = useState<TimelineState>(() => ({ tracks: defaultTracks(), clips: [], captions: [] }));
+  const [selectedCaptionId, setSelectedCaptionId] = useState<string | null>(null);
+  const [captionStyle, setCaptionStyle] = useState<CaptionStyle>(DEFAULT_CAPTION_STYLE);
+  const captionInputRef = useRef<HTMLInputElement>(null);
   const [selectedClipId, setSelectedClipId] = useState<string | null>(null);
   const [playhead, setPlayhead] = useState(0);
   const [playing, setPlaying] = useState(false);
@@ -42,7 +52,7 @@ export default function App() {
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
   const [assemblyOpen, setAssemblyOpen] = useState(false);
-  const { tracks, clips } = timeline;
+  const { tracks, clips, captions } = timeline;
 
   // Histórico de edições da timeline (trilhas + clipes). Os refs guardam o valor mais recente
   // para que várias edições no mesmo ciclo (e os atalhos de teclado) não usem estado antigo.
@@ -62,7 +72,7 @@ export default function App() {
   }, []);
 
   const selected = media.find((item) => item.id === selectedId) ?? null;
-  const timelineEnd = timelineEndOf(clips);
+  const timelineEnd = timelineEndOf(timeline);
   const mediaCount = useMemo(() => ({
     video: media.filter((item) => item.kind === "video").length,
     image: media.filter((item) => item.kind === "image").length,
@@ -277,6 +287,7 @@ export default function App() {
 
   function selectTimelineClip(clip: TimelineClip | null) {
     if (!clip) { setSelectedClipId(null); return; }
+    setSelectedCaptionId(null);
     const item = mediaOf(clip.mediaId);
     if (!item) return;
     setSelectedId(item.id);
@@ -451,6 +462,101 @@ export default function App() {
     editTimeline((state) => ({ ...state, tracks: state.tracks.map((track) => track.id === trackId ? { ...track, [flag]: !track[flag] } : track) }));
   }
 
+  // ---- Legendas -----------------------------------------------------------------
+  function editCaptions(updater: (current: Caption[]) => Caption[], mergeKey?: string) {
+    editTimeline((state) => {
+      const next = updater(state.captions);
+      return next === state.captions ? state : { ...state, captions: next };
+    }, mergeKey);
+  }
+
+  function selectCaption(id: string | null) {
+    setSelectedCaptionId(id);
+    if (id) { setSelectedClipId(null); setPreviewMode("program"); }
+  }
+
+  /** Muda texto ou tempos de uma legenda (fim sempre depois do início). */
+  function updateCaption(id: string, change: Partial<Caption>) {
+    editCaptions((current) => {
+      const target = current.find((caption) => caption.id === id);
+      if (!target) return current;
+      const next = { ...target, ...change, id };
+      next.start = roundTime(Math.max(0, next.start));
+      if (change.start !== undefined && change.end === undefined && next.end - next.start < 0.1) next.end = roundTime(next.start + (target.end - target.start));
+      if (next.end - next.start < 0.1) { setNotice("O fim da legenda precisa ser depois do início."); return current; }
+      next.end = roundTime(next.end);
+      if (next.start === target.start && next.end === target.end && next.text === target.text) return current;
+      return sortCaptions(current.map((caption) => caption.id === id ? next : caption));
+    });
+  }
+
+  function addCaptionAt(at: number) {
+    const caption = newCaptionAt(timelineRef.current.captions, at, crypto.randomUUID());
+    if (!caption) { setNotice("Já existe uma legenda nesse ponto. Mova o playhead para um trecho vazio."); return; }
+    editCaptions((current) => sortCaptions([...current, caption]));
+    selectCaption(caption.id);
+    setNotice("Legenda criada. Escreva o texto na barra acima da timeline.");
+  }
+
+  function removeCaption(id: string) {
+    editCaptions((current) => current.filter((caption) => caption.id !== id));
+    if (selectedCaptionId === id) setSelectedCaptionId(null);
+    setNotice("Legenda removida. Ctrl+Z desfaz.");
+  }
+
+  function loadCaptionText(text: string, fileName: string) {
+    const { captions: parsed, skipped, format } = parseCaptions(text);
+    if (!parsed.length) { setNotice(`Nenhuma legenda válida em “${fileName}”.`); return; }
+    const replaced = timelineRef.current.captions.length;
+    editCaptions(() => parsed);
+    setSelectedCaptionId(null);
+    setPreviewMode("program");
+    setNotice(`${parsed.length} legenda(s) importada(s) de “${fileName}” (${format.toUpperCase()})`
+      + `${skipped ? `, ${skipped} bloco(s) inválido(s) ignorado(s)` : ""}${replaced ? `, substituindo ${replaced} anterior(es)` : ""}. Ctrl+Z desfaz.`);
+  }
+
+  async function importCaptions() {
+    if (!inTauri()) { captionInputRef.current?.click(); return; }
+    try {
+      const path = await open({ multiple: false, title: "Importar legendas", filters: [{ name: "Legendas", extensions: ["srt", "vtt"] }] });
+      if (!path || Array.isArray(path)) return;
+      loadCaptionText(await invoke<string>("read_text_file", { path }), fileNameOf(path));
+    } catch (error) { setNotice("Erro ao importar legendas: " + String(error)); }
+  }
+
+  async function exportCaptions(format: CaptionFormat) {
+    const contents = formatCaptions(timelineRef.current.captions, format);
+    const fileName = `${projectName.replace(/[^\p{L}\p{N}\-_ ]/gu, "_").trim() || "legendas"}.${format}`;
+    if (!inTauri()) {
+      const link = document.createElement("a");
+      link.href = URL.createObjectURL(new Blob([contents], { type: "text/plain;charset=utf-8" }));
+      link.download = fileName;
+      link.click();
+      setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+      return;
+    }
+    try {
+      const path = await save({ title: `Exportar legendas ${format.toUpperCase()}`, defaultPath: fileName,
+        filters: [{ name: format === "srt" ? "SubRip" : "WebVTT", extensions: [format] }] });
+      if (!path) return;
+      const finalPath = path.toLowerCase().endsWith(`.${format}`) ? path : `${path}.${format}`;
+      await invoke("write_text_file", { path: finalPath, contents });
+      setNotice(`Legendas exportadas em: ${finalPath}`);
+    } catch (error) { setNotice("Erro ao exportar legendas: " + String(error)); }
+  }
+
+  function shiftAllCaptions(delta: number) {
+    editCaptions((current) => shiftCaptions(current, delta), "shift-captions");
+    setNotice(`Legendas ${delta < 0 ? "adiantadas" : "atrasadas"} ${formatSeconds(Math.abs(delta))}s. Ctrl+Z desfaz.`);
+  }
+
+  function clearCaptions() {
+    const count = timelineRef.current.captions.length;
+    editCaptions(() => []);
+    setSelectedCaptionId(null);
+    setNotice(`${count} legenda(s) removida(s). Ctrl+Z desfaz.`);
+  }
+
   // ---- Montagem automática -------------------------------------------------------
   /** Coloca a montagem planejada na timeline como um único passo de desfazer. */
   function applyAssembly(plan: AssemblyPlan, narration: MediaItem | null) {
@@ -474,7 +580,7 @@ export default function App() {
         const audioTrack = pickTrack("audio");
         added.push({ id: crypto.randomUUID(), mediaId: narration.id, trackId: audioTrack.id, start: 0, duration: roundTime(narration.duration), inPoint: 0 });
       }
-      return { tracks: tracksNext, clips: [...state.clips, ...added] };
+      return { ...state, tracks: tracksNext, clips: [...state.clips, ...added] };
     });
     setAssemblyOpen(false);
     setSelectedClipId(null);
@@ -502,15 +608,15 @@ export default function App() {
     else if (ctrl && key === "v") pasteAtPlayhead();
     else if (ctrl) return;
     else if (key === " ") togglePlay();
-    else if (key === "delete" || key === "backspace") { if (selectedClipId) removeClip(selectedClipId); }
+    else if (key === "delete" || key === "backspace") { if (selectedCaptionId) removeCaption(selectedCaptionId); else if (selectedClipId) removeClip(selectedClipId); }
     else if (key === "s") splitAtPlayhead();
     else if (key === "arrowleft" && event.altKey) nudgeSelected(-step);
     else if (key === "arrowright" && event.altKey) nudgeSelected(step);
     else if (key === "arrowleft") movePlayhead(roundTime(Math.max(0, playheadRef.current - step)));
     else if (key === "arrowright") movePlayhead(roundTime(playheadRef.current + step));
     else if (key === "home") movePlayhead(0);
-    else if (key === "end") movePlayhead(roundTime(timelineEndOf(timelineRef.current.clips)));
-    else if (key === "escape") setSelectedClipId(null);
+    else if (key === "end") movePlayhead(roundTime(timelineEndOf(timelineRef.current)));
+    else if (key === "escape") { setSelectedClipId(null); setSelectedCaptionId(null); }
     else return;
     event.preventDefault();
   }
@@ -529,7 +635,7 @@ export default function App() {
     return {
       format: "sveproj", schemaVersion: 1, projectName, ratio,
       media: media.map(({ id, name, kind, size, path, duration }) => ({ id, name, kind, size, path, duration: duration ?? null })),
-      tracks, clips, note: "Projeto com caminhos absolutos para mídia. Se arquivos forem movidos, use Relinkar na biblioteca.",
+      tracks, clips, captions, captionStyle, note: "Projeto com caminhos absolutos para mídia. Se arquivos forem movidos, use Relinkar na biblioteca.",
     };
   }
 
@@ -636,7 +742,23 @@ export default function App() {
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
-      setTimelineNow({ tracks: restoredTracks, clips: restoredClips });
+      const savedCaptions: any[] = Array.isArray(data.captions) ? data.captions : [];
+      const restoredCaptions: Caption[] = sortCaptions(savedCaptions.flatMap((caption): Caption[] => {
+        const start = Number(caption?.start), end = Number(caption?.end);
+        const text = typeof caption?.text === "string" ? caption.text.trim() : "";
+        if (!Number.isFinite(start) || !Number.isFinite(end) || start < 0 || end <= start || !text) return [];
+        return [{ id: typeof caption.id === "string" ? caption.id : crypto.randomUUID(), start, end, text }];
+      }));
+      const savedStyle = data.captionStyle ?? {};
+      const size = Number(savedStyle.size);
+      setCaptionStyle({
+        visible: savedStyle.visible !== false,
+        size: Number.isFinite(size) && size >= 2 && size <= 12 ? size : DEFAULT_CAPTION_STYLE.size,
+        position: ["bottom", "middle", "top"].includes(savedStyle.position) ? savedStyle.position : DEFAULT_CAPTION_STYLE.position,
+        background: Boolean(savedStyle.background),
+      });
+      setTimelineNow({ tracks: restoredTracks, clips: restoredClips, captions: restoredCaptions });
+      setSelectedCaptionId(null);
       applyHistory(emptyHistory());
       clipboardRef.current = null;
       setSelectedClipId(null);
@@ -725,7 +847,8 @@ export default function App() {
             <div className="preview-stage">
               <div className={`preview-canvas ratio-${ratio.replace(":", "-")}`}>
                 {previewMode === "program"
-                  ? <ProgramMonitor media={media} tracks={tracks} clips={clips} playhead={playhead} playing={playing} />
+                  ? <><ProgramMonitor media={media} tracks={tracks} clips={clips} playhead={playhead} playing={playing} />
+                    <CaptionOverlay captions={captions} playhead={playhead} style={captionStyle} /></>
                   : !selected ? <div className="preview-empty"><div className="preview-logo"><MonitorPlay size={31} /></div><strong>Seu vídeo começa aqui</strong><span>Selecione um arquivo na biblioteca para visualizar.</span></div> :
                   selected.kind === "image" ? <img className="preview-media" src={selected.url} /> :
                   selected.kind === "video" ? <video key={selected.id} ref={previewVideoRef} className="preview-media" src={selected.url} controls onTimeUpdate={(event) => setPreviewTime(event.currentTarget.currentTime)} onPlay={() => setPreviewPlaying(true)} onPause={() => setPreviewPlaying(false)} onLoadedMetadata={(event) => setPreviewDuration(event.currentTarget.duration || 0)} onDurationChange={(event) => setPreviewDuration(event.currentTarget.duration || 0)} /> :
@@ -749,6 +872,14 @@ export default function App() {
             media={media}
             tracks={tracks}
             clips={clips}
+            captions={captions}
+            selectedCaptionId={selectedCaptionId}
+            captionsVisible={captionStyle.visible}
+            onSelectCaption={selectCaption}
+            onUpdateCaption={updateCaption}
+            onAddCaption={addCaptionAt}
+            onRemoveCaption={removeCaption}
+            onToggleCaptions={() => setCaptionStyle((style) => ({ ...style, visible: !style.visible }))}
             selectedClipId={selectedClipId}
             playhead={playhead}
             ratio={ratio}
@@ -786,7 +917,14 @@ export default function App() {
             <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
             <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
           </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}
-          <div className="tools-card"><div className="tools-title"><Sparkles size={15} /> Ferramentas planejadas</div><div className="tool-row"><span>Legendas</span><small>Em breve</small></div><div className="tool-row"><span>Transições</span><small>Em breve</small></div><div className="tool-row"><span>Correção de cor</span><small>Em breve</small></div><div className="tool-row"><span>Mixagem de áudio</span><small>Em breve</small></div></div>
+          <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
+            onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />
+          <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {
+            const file = event.target.files?.[0];
+            event.target.value = "";
+            if (file) loadCaptionText(await file.text(), file.name);
+          }} />
+          <div className="tools-card"><div className="tools-title"><Sparkles size={15} /> Ferramentas planejadas</div><div className="tool-row"><span>Transições</span><small>Em breve</small></div><div className="tool-row"><span>Correção de cor</span><small>Em breve</small></div><div className="tool-row"><span>Mixagem de áudio</span><small>Em breve</small></div></div>
         </aside>
       </main>
       <footer className="statusbar"><span><i className="status-dot" /> {notice}</span><span>Social Video Editor · v{appVersion} · Projeto local</span></footer>

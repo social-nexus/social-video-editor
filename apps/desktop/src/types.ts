@@ -54,5 +54,19 @@ export type ClipAudio = Pick<TimelineClip, "volume" | "fadeIn" | "fadeOut">;
 /** Parte do clipe que muda ao mover ou aparar. */
 export type ClipGeometry = Pick<TimelineClip, "start" | "duration" | "inPoint">;
 
+/** Uma legenda: texto puro (pode ter quebras de linha) entre `start` e `end`, em segundos da timeline. */
+export type Caption = { id: string; start: number; end: number; text: string };
+
+/** Aparência das legendas no preview (e, no futuro, na exportação). */
+export type CaptionStyle = {
+  visible: boolean;
+  /** Altura da letra em % da altura do vídeo. */
+  size: number;
+  position: "bottom" | "middle" | "top";
+  background: boolean;
+};
+
+export const DEFAULT_CAPTION_STYLE: CaptionStyle = { visible: true, size: 5, position: "bottom", background: false };
+
 /** Tudo o que o desfazer/refazer guarda. */
-export type TimelineState = { tracks: Track[]; clips: TimelineClip[] };
+export type TimelineState = { tracks: Track[]; clips: TimelineClip[]; captions: Caption[] };

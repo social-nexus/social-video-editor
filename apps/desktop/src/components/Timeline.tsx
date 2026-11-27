@@ -4,7 +4,7 @@ import {
   AudioLines, ChevronDown, Copy, Eye, EyeOff, Film, Lock, LockOpen, Maximize2, Plus, Redo2, Scissors,
   SquareSplitHorizontal, Trash2, Undo2, Volume2, VolumeX, X, ZoomIn, ZoomOut,
 } from "lucide-react";
-import type { ClipAudio, ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
+import type { Caption, ClipAudio, ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
 import { formatSeconds, formatTimecode, parseSeconds, roundTime } from "../lib/time";
 import {
   applyClipDrag, clampClipDuration, clipEnd, clipSpeed, maxClipDuration, rulerStep, snapTargetsFor, sourceDurationOf,
@@ -13,6 +13,7 @@ import {
 import { freeBounds, trackKindFor, trackLabel } from "../lib/tracks";
 import { clipVolume, effectiveFades, formatPercent, trackVolume } from "../lib/audio";
 import ClipWaveform from "./ClipWaveform";
+import CaptionLane, { CaptionEditBar } from "./CaptionLane";
 
 const TRACK_LABEL_PX = 104;
 /** Distância, no conteúdo rolável, entre a borda esquerda e o instante 0 (padding + cabeçalho da trilha). */
@@ -64,6 +65,14 @@ type Props = {
   /** Fim de um arraste "mover": nova posição e (talvez) nova trilha. Sobrescreve o que estiver embaixo. */
   onMoveClip: (clipId: string, geometry: ClipGeometry, trackId: string) => void;
   onRemoveClip: (clipId: string) => void;
+  captions: Caption[];
+  selectedCaptionId: string | null;
+  captionsVisible: boolean;
+  onSelectCaption: (id: string | null) => void;
+  onUpdateCaption: (id: string, change: Partial<Caption>) => void;
+  onAddCaption: (at: number) => void;
+  onRemoveCaption: (id: string) => void;
+  onToggleCaptions: () => void;
   onUpdateClipAudio: (clipId: string, change: ClipAudio) => void;
   onSetTrackVolume: (trackId: string, volume: number) => void;
   onPlayheadChange: (seconds: number) => void;
@@ -113,7 +122,11 @@ export default function Timeline(props: Props) {
   const selectedSource = sourceDurationOf(selectedMedia);
   const selectedLocked = selectedClip ? Boolean(trackById.get(selectedClip.trackId)?.locked) : false;
 
-  const totalDuration = clips.reduce((max, clip) => Math.max(max, clipEnd(geometryOf(clip))), 0);
+  const totalDuration = Math.max(
+    clips.reduce((max, clip) => Math.max(max, clipEnd(geometryOf(clip))), 0),
+    props.captions.reduce((max, caption) => Math.max(max, caption.end), 0),
+  );
+  const selectedCaption = props.captions.find((caption) => caption.id === props.selectedCaptionId) ?? null;
   // A faixa ocupa pelo menos a área visível; cresce com o conteúdo (+4 s de folga).
   const laneWidth = Math.max(viewportWidth - LANE_X - 12, (Math.max(totalDuration, playhead) + 4) * pps);
   const step = rulerStep(pps);
@@ -407,6 +420,7 @@ export default function Timeline(props: Props) {
           <button className="button secondary compact" title="Remover clipe da timeline" onClick={() => props.onRemoveClip(selectedClip.id)}><X size={12} /> Remover</button>
         </>}
       </div>}
+      {selectedCaption && <CaptionEditBar caption={selectedCaption} onChange={props.onUpdateCaption} onRemove={props.onRemoveCaption} onNotice={props.onNotice} />}
       {selectedClip && selectedHasSound && !selectedLocked && <div className="clip-edit-controls clip-audio-controls">
         <span><Volume2 size={11} /> Som</span>
         <label>Volume <input className="clip-volume-range" type="range" min={0} max={100} step={1} value={Math.round(clipVolume(selectedClip) * 100)}
@@ -443,6 +457,12 @@ export default function Timeline(props: Props) {
               </div>
             </div>;
           })}
+          <CaptionLane captions={props.captions} selectedCaptionId={props.selectedCaptionId} visible={props.captionsVisible}
+            pps={pps} laneWidth={laneWidth} laneBackground={laneBackground} playhead={playhead}
+            clipEdges={clips.flatMap((clip) => [clip.start, clipEnd(clip)])}
+            onSelect={(id) => { props.onSelectCaption(id); if (id) props.onSelectClip(null); }}
+            onChange={props.onUpdateCaption} onAdd={props.onAddCaption} onToggleVisible={props.onToggleCaptions}
+            onPlayheadChange={props.onPlayheadChange} />
           <div className="timeline-playhead" style={{ left: TRACK_LABEL_PX + playhead * pps }} />
         </div>
         {clips.length === 0 && <div className="timeline-empty"><Scissors size={16} /> Importe uma mídia e clique em + para adicioná-la à timeline.</div>}
