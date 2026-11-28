@@ -2,13 +2,13 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import { effectiveAnimations } from "../lib/animations";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import {
-  AudioLines, ChevronDown, Copy, Eye, EyeOff, Film, Lock, LockOpen, Maximize2, Plus, Redo2, Scissors,
+  AudioLines, ChevronDown, Copy, Eye, EyeOff, Film, Lock, LockOpen, Magnet, Maximize2, Plus, Redo2, Scissors,
   SquareSplitHorizontal, Trash2, Undo2, Volume2, VolumeX, X, ZoomIn, ZoomOut,
 } from "lucide-react";
 import type { Caption, ClipAudio, ClipGeometry, MediaItem, TimelineClip, Track, TrackKind } from "../types";
 import { formatSeconds, formatTimecode, parseSeconds, roundTime } from "../lib/time";
 import {
-  applyClipDrag, clampClipDuration, clipEnd, clipSpeed, maxClipDuration, nearestSnap, rulerStep, snapTargetsFor, sourceDurationOf,
+  applyClipDrag, clampClipDuration, clipEnd, clipSpeed, maxClipDuration, nearestSnap, rippleFollowers, rippleTrim, rulerStep, snapTargetsFor, sourceDurationOf,
   type DragMode,
 } from "../lib/timeline";
 import { freeBounds, trackKindFor, trackLabel } from "../lib/tracks";
@@ -43,6 +43,10 @@ type DragState = {
   snapTargets: number[];
   minStart: number;
   maxEnd: number;
+  /** Edição em cascata: os clipes seguintes da trilha andam `shift` segundos junto com o aparo. */
+  ripple: boolean;
+  followers: Set<string>;
+  shift: number;
 };
 
 export type TrackFlag = "hidden" | "muted" | "locked";
@@ -84,6 +88,11 @@ type Props = {
   onAddTrack: (kind: TrackKind) => void;
   onRemoveTrack: (trackId: string) => void;
   onToggleTrack: (trackId: string, flag: TrackFlag) => void;
+  /** Edição em cascata ligada (aparar e remover sem deixar buraco). */
+  ripple: boolean;
+  onToggleRipple: () => void;
+  /** Fim de um aparo em cascata: nova geometria do clipe e quanto os seguintes andam. */
+  onRippleTrim: (clipId: string, geometry: ClipGeometry, shift: number) => void;
   /** Adiciona a transição padrão no corte antes deste clipe (e o seleciona). */
   onAddTransition: (clipId: string) => void;
   /** Mídia arrastada e solta numa trilha (ou numa trilha nova do tipo dado), no instante `start`. */
@@ -129,7 +138,8 @@ export default function Timeline(props: Props) {
     ...tracks.filter((track) => track.kind === "audio"),
   ], [tracks]);
 
-  const geometryOf = (clip: TimelineClip): ClipGeometry => drag?.clipId === clip.id ? drag.preview : clip;
+  const geometryOf = (clip: TimelineClip): ClipGeometry => drag?.clipId === clip.id ? drag.preview
+    : drag?.ripple && drag.followers.has(clip.id) ? { ...clip, start: Math.max(0, clip.start + drag.shift) } : clip;
   const trackOf = (clip: TimelineClip) => drag?.clipId === clip.id ? drag.trackId : clip.trackId;
 
   const selectedClip = clips.find((clip) => clip.id === selectedClipId) ?? null;
@@ -181,11 +191,15 @@ export default function Timeline(props: Props) {
     if (track?.locked) { props.onNotice("Esta trilha está travada. Destrave para editar."); return; }
     const original: ClipGeometry = { start: clip.start, duration: clip.duration, inPoint: clip.inPoint };
     const bounds = freeBounds(clip, clips);
+    const ripple = props.ripple && mode !== "move";
+    const followers = new Set(ripple ? rippleFollowers(clip, clips).map((other) => other.id) : []);
     const state: DragState = {
+      ripple, followers, shift: 0,
       clipId: clip.id, mode, startX: event.clientX, moved: false, original, preview: original,
       trackId: clip.trackId, trackKind: track?.kind ?? trackKindFor(mediaById.get(clip.mediaId)?.kind ?? "video"),
       sourceDuration: sourceDurationOf(mediaById.get(clip.mediaId)),
-      snapTargets: snapTargetsFor(clip.id, clips, playhead),
+      // Em cascata, os seguintes andam junto: não servem de ímã.
+      snapTargets: snapTargetsFor(clip.id, ripple ? clips.filter((other) => !followers.has(other.id)) : clips, playhead),
       minStart: bounds.minStart, maxEnd: bounds.maxEnd, speed: clipSpeed(clip),
     };
     dragRef.current = state;
@@ -209,9 +223,16 @@ export default function Timeline(props: Props) {
       const trackId = current.mode === "move" ? trackUnderPointer(event, current.trackKind) ?? current.trackId : current.trackId;
       if (!current.moved && Math.abs(dx) < DRAG_START_PX && trackId === current.trackId) return;
       // Segurar Alt desliga o snap.
+      const snapThreshold = event.altKey ? 0 : SNAP_PX / pps;
+      if (current.ripple && current.mode !== "move") {
+        const result = rippleTrim(current.mode, current.original, dx / pps,
+          { sourceDuration: current.sourceDuration, snapTargets: current.snapTargets, snapThreshold, speed: current.speed });
+        dragRef.current = { ...current, moved: true, preview: result.geometry, shift: result.shift, trackId };
+        setDrag(dragRef.current);
+        return;
+      }
       const preview = applyClipDrag(current.mode, current.original, dx / pps, {
-        sourceDuration: current.sourceDuration, snapTargets: current.snapTargets,
-        snapThreshold: event.altKey ? 0 : SNAP_PX / pps,
+        sourceDuration: current.sourceDuration, snapTargets: current.snapTargets, snapThreshold,
         minStart: current.minStart, maxEnd: current.maxEnd, speed: current.speed,
       });
       dragRef.current = { ...current, moved: true, preview, trackId };
@@ -223,6 +244,7 @@ export default function Timeline(props: Props) {
       setDrag(null);
       if (!commit || !current?.moved) return;
       if (current.mode === "move") propsRef.current.onMoveClip(current.clipId, current.preview, current.trackId);
+      else if (current.ripple) propsRef.current.onRippleTrim(current.clipId, current.preview, current.shift);
       else propsRef.current.onUpdateClip(current.clipId, current.preview);
     };
     const up = () => finish(true);
@@ -471,6 +493,9 @@ export default function Timeline(props: Props) {
             <button className="icon-button small" title="Refazer (Ctrl+Y)" onClick={props.onRedo} disabled={!props.canRedo}><Redo2 size={14} /></button>
             <button className="icon-button small" title="Dividir no playhead (S)" onClick={props.onSplit} disabled={!clips.length}><SquareSplitHorizontal size={14} /></button>
             <button className="icon-button small" title="Duplicar clipe selecionado (Ctrl+D)" onClick={props.onDuplicate} disabled={!selectedClip || selectedLocked}><Copy size={14} /></button>
+            <button className={`icon-button small ripple-toggle ${props.ripple ? "on" : ""}`} aria-pressed={props.ripple} onClick={props.onToggleRipple}
+              title={props.ripple ? "Edição em cascata LIGADA (R): aparar ou remover um clipe puxa os seguintes da trilha, sem deixar buraco. Clique para desligar."
+                : "Edição em cascata desligada (R): clique para ligar — aparar ou remover um clipe puxa os seguintes da trilha, sem deixar buraco."}><Magnet size={14} /></button>
           </div>
           <span className="timeline-timecode" title="Posição do playhead (← → move, Shift = 1s)">{formatTimecode(playhead)}</span>
           <div className="zoom-controls">

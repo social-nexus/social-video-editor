@@ -9,7 +9,7 @@ import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPl
 import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
-import { clipEnd, sourceDurationOf, splitClip } from "./lib/timeline";
+import { clipEnd, sourceDurationOf, splitClip, rippleFollowers, shiftClips } from "./lib/timeline";
 import { clampFade, formatPercent } from "./lib/audio";
 import { formatCaptions, newCaptionAt, parseCaptions, shiftCaptions, sortCaptions, type CaptionFormat } from "./lib/captions";
 import CaptionsPanel, { CaptionOverlay } from "./components/CaptionsPanel";
@@ -182,6 +182,26 @@ export default function App() {
     setLayout({ left: null, right: null, timeline: null });
     saveLayout({ left: null, right: null, timeline: null });
     setNotice("Painéis de volta ao arranjo padrão.");
+  }
+
+  /** Edição em cascata (aparar/remover sem deixar buraco), lembrada neste computador. */
+  const [ripple, setRipple] = useState(() => localStorage.getItem("sve.ripple") === "1");
+  function toggleRipple() {
+    setRipple((on) => {
+      localStorage.setItem("sve.ripple", on ? "0" : "1");
+      setNotice(on ? "Edição em cascata desligada." : "Edição em cascata ligada: aparar ou remover um clipe puxa os seguintes da trilha.");
+      return !on;
+    });
+  }
+  /** Fim de um aparo em cascata: o clipe muda e os seguintes da trilha andam junto (um só passo de desfazer). */
+  function rippleTrimClip(clipId: string, geometry: ClipGeometry, shift: number) {
+    editClips((current) => {
+      const target = current.find((clip) => clip.id === clipId);
+      if (!target || isLocked(target.trackId)) return current;
+      const followers = new Set(rippleFollowers(target, current).map((clip) => clip.id));
+      const updated = current.map((clip) => clip.id === clipId ? { ...clip, ...geometry } : clip);
+      return shiftClips(updated, followers, shift);
+    });
   }
 
   /** Mini-aba aberta no painel Propriedades. */
@@ -861,7 +881,9 @@ export default function App() {
     const clip = timelineRef.current.clips.find((entry) => entry.id === clipId);
     if (!clip) return;
     if (isLocked(clip.trackId)) { setNotice("Esta trilha está travada. Destrave para remover o clipe."); return; }
-    editClips((current) => current.filter((entry) => entry.id !== clipId));
+    // Em cascata: os seguintes da trilha voltam e fecham o buraco.
+    const followers = ripple ? new Set(rippleFollowers(clip, timelineRef.current.clips).map((entry) => entry.id)) : new Set<string>();
+    editClips((current) => shiftClips(current.filter((entry) => entry.id !== clipId), followers, -clip.duration));
     if (selectedClipId === clipId) setSelectedClipId(null);
   }
 
@@ -1109,6 +1131,7 @@ export default function App() {
     else if (key === " ") togglePlay();
     else if (key === "delete" || key === "backspace") { if (selectedCaptionId) removeCaption(selectedCaptionId); else if (selectedClipId) removeClip(selectedClipId); }
     else if (key === "s") splitAtPlayhead();
+    else if (key === "r") toggleRipple();
     else if (key === "arrowleft" && event.altKey) nudgeSelected(-step);
     else if (key === "arrowright" && event.altKey) nudgeSelected(step);
     else if (key === "arrowleft") movePlayhead(roundTime(Math.max(0, playheadRef.current - step)));
@@ -1616,6 +1639,9 @@ export default function App() {
               setNotice("Transição “Dissolver” adicionada. Ajuste o tipo e a duração em Propriedades.");
             }}
             onRemoveClip={removeClip}
+            ripple={ripple}
+            onToggleRipple={toggleRipple}
+            onRippleTrim={rippleTrimClip}
             onPlayheadChange={movePlayhead}
             onNotice={setNotice}
             onAddTrack={addTrack}

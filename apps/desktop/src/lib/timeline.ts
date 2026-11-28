@@ -119,3 +119,48 @@ const RULER_STEPS = [0.1, 0.25, 0.5, 1, 2, 5, 10, 15, 30, 60, 120, 300, 600];
 export function rulerStep(pxPerSecond: number, minPx = 56) {
   return RULER_STEPS.find((step) => step * pxPerSecond >= minPx) ?? RULER_STEPS[RULER_STEPS.length - 1];
 }
+
+/**
+ * Edição em cascata (ripple): aparar sem deixar buraco.
+ * - trim-end: o fim muda e os clipes seguintes da trilha andam junto.
+ * - trim-start: o clipe continua grudado no anterior (o início não sai do lugar); o pedaço tirado
+ *   do começo some e os seguintes andam para trás (ou para frente, ao esticar).
+ * Retorna a nova geometria do clipe e quanto os clipes seguintes andam (shift).
+ */
+export function rippleTrim(mode: "trim-start" | "trim-end", original: ClipGeometry, delta: number,
+  options: { sourceDuration: number | null; speed?: number; snapTargets: number[]; snapThreshold: number }): { geometry: ClipGeometry; shift: number } {
+  const speed = options.speed && options.speed > 0 ? options.speed : 1;
+  const oldEnd = clipEnd(original);
+  if (mode === "trim-end") {
+    let end = oldEnd + delta;
+    const snapped = nearestSnap(end, options.snapTargets, options.snapThreshold);
+    if (snapped !== null) end = snapped;
+    const duration = clampClipDuration({ inPoint: original.inPoint, speed }, options.sourceDuration, end - original.start);
+    return { geometry: { ...original, duration }, shift: roundTime(original.start + duration - oldEnd) };
+  }
+  // trim-start: `amount` = quanto sai do começo (negativo = recupera o que tinha sido aparado).
+  let amount = delta;
+  const snapped = nearestSnap(oldEnd - amount, options.snapTargets, options.snapThreshold);
+  if (snapped !== null) amount = oldEnd - snapped;
+  const most = original.duration - MIN_CLIP_DURATION;
+  const least = options.sourceDuration === null ? -Infinity : -original.inPoint / speed;
+  amount = Math.min(most, Math.max(least, amount));
+  const geometry: ClipGeometry = {
+    start: original.start,
+    duration: roundTime(original.duration - amount),
+    inPoint: options.sourceDuration === null ? 0 : roundTime(Math.max(0, original.inPoint + amount * speed)),
+  };
+  return { geometry, shift: roundTime(geometry.duration - original.duration) };
+}
+
+/** Clipes da mesma trilha que começam no fim de `clip` ou depois (os que andam na cascata). */
+export function rippleFollowers(clip: Pick<TimelineClip, "id" | "trackId" | "start" | "duration">, clips: TimelineClip[]) {
+  const end = clip.start + clip.duration;
+  return clips.filter((other) => other.id !== clip.id && other.trackId === clip.trackId && other.start >= end - 0.001);
+}
+
+/** Anda `shift` segundos com os clipes dados (nunca antes do 0). */
+export function shiftClips(clips: TimelineClip[], ids: Set<string>, shift: number): TimelineClip[] {
+  if (!shift || !ids.size) return clips;
+  return clips.map((clip) => ids.has(clip.id) ? { ...clip, start: roundTime(Math.max(0, clip.start + shift)) } : clip);
+}

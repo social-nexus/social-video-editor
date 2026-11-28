@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { applyClipDrag, clampClipDuration, nearestSnap, rulerStep, snapTargetsFor, splitClip } from "./timeline";
+import { applyClipDrag, clampClipDuration, nearestSnap, rippleFollowers, rippleTrim, rulerStep, shiftClips, snapTargetsFor, splitClip } from "./timeline";
+import { MIN_CLIP_DURATION } from "./time";
 import { formatTimecode, parseSeconds } from "./time";
 import type { TimelineClip } from "../types";
 
@@ -112,5 +113,39 @@ describe("velocidade", () => {
   it("dividir a 50% continua a mídia do ponto certo", () => {
     const parts = splitClip({ id: "a", mediaId: "m", trackId: "t", start: 0, duration: 8, inPoint: 0, speed: 0.5 }, 4, "b", true);
     expect(parts![1]).toMatchObject({ start: 4, duration: 4, inPoint: 2, speed: 0.5 });
+  });
+});
+
+describe("edição em cascata (ripple)", () => {
+  const opts = { sourceDuration: 20, snapTargets: [] as number[], snapThreshold: 0 };
+  it("aparar o fim: os seguintes andam junto", () => {
+    const r = rippleTrim("trim-end", { start: 2, duration: 5, inPoint: 1 }, -1.5, opts);
+    expect(r.geometry).toEqual({ start: 2, duration: 3.5, inPoint: 1 });
+    expect(r.shift).toBe(-1.5);
+  });
+  it("aparar o começo: fica grudado no anterior, a mídia avança e os seguintes voltam", () => {
+    const r = rippleTrim("trim-start", { start: 2, duration: 5, inPoint: 1 }, 2, opts);
+    expect(r.geometry).toEqual({ start: 2, duration: 3, inPoint: 3 });
+    expect(r.shift).toBe(-2);
+  });
+  it("esticar o começo recupera só o que existe na mídia e empurra os seguintes", () => {
+    const r = rippleTrim("trim-start", { start: 2, duration: 5, inPoint: 1 }, -3, opts);
+    expect(r.geometry).toEqual({ start: 2, duration: 6, inPoint: 0 });
+    expect(r.shift).toBe(1);
+  });
+  it("imagem: estica à vontade e nunca fica menor que o mínimo", () => {
+    const image = { ...opts, sourceDuration: null };
+    expect(rippleTrim("trim-start", { start: 0, duration: 5, inPoint: 0 }, -4, image).geometry).toEqual({ start: 0, duration: 9, inPoint: 0 });
+    expect(rippleTrim("trim-start", { start: 0, duration: 5, inPoint: 0 }, 99, image).geometry.duration).toBeCloseTo(MIN_CLIP_DURATION);
+  });
+  it("seguintes: só os da mesma trilha que começam depois", () => {
+    const clips = [
+      { id: "a", mediaId: "m", trackId: "v1", start: 0, duration: 3, inPoint: 0 },
+      { id: "b", mediaId: "m", trackId: "v1", start: 3, duration: 2, inPoint: 0 },
+      { id: "c", mediaId: "m", trackId: "v1", start: 6, duration: 2, inPoint: 0 },
+      { id: "d", mediaId: "m", trackId: "v2", start: 4, duration: 2, inPoint: 0 },
+    ];
+    expect(rippleFollowers(clips[0], clips).map((clip) => clip.id)).toEqual(["b", "c"]);
+    expect(shiftClips(clips, new Set(["b", "c"]), -1).map((clip) => clip.start)).toEqual([0, 2, 5, 4]);
   });
 });

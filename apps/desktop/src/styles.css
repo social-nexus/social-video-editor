@@ -321,3 +321,5 @@ body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select:
 .props-tab { padding: 5px 6px; font-size: 10px; white-space: nowrap; flex: 1 1 auto; }
 .props-tabs { padding: 8px 4px 0; }
 .props-tab { padding: 5px 4px; font-size: 9.5px; letter-spacing: -.1px; }
+/* Edição em cascata (ímã) */
+.ripple-toggle.on { color: #fff; background: linear-gradient(135deg, #ec4899, #fb923c); border-color: transparent; }
