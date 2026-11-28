@@ -5,7 +5,7 @@ import type { PointerEvent as ReactPointerEvent, CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers } from "lucide-react";
-import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind } from "./types";
+import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind, ClipTransition, TransitionType } from "./types";
 import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
@@ -13,7 +13,9 @@ import { clipEnd, sourceDurationOf, splitClip } from "./lib/timeline";
 import { clampFade, formatPercent } from "./lib/audio";
 import { formatCaptions, newCaptionAt, parseCaptions, shiftCaptions, sortCaptions, type CaptionFormat } from "./lib/captions";
 import CaptionsPanel, { CaptionOverlay } from "./components/CaptionsPanel";
-import EffectsPanel, { type ApplyAllOptions, type EffectsChange } from "./components/EffectsPanel";
+import EffectsPanel, { type ApplyAllOptions, type EffectsChange, type EffectsSection } from "./components/EffectsPanel";
+
+type PropsTab = "media" | EffectsSection | "captions";
 import { makeMotion, MOTION_PRESETS, presetForIndex } from "./lib/effects";
 import { validAnimation } from "./lib/animations";
 import { validCaptionStyle } from "./lib/captionWords";
@@ -28,6 +30,7 @@ import Splitter from "./components/Splitter";
 import { clampSide, clampTimeline, DEFAULT_DOCKS, loadDocks, loadLayout, moveDock, sameDocks, saveDocks, saveLayout, type Docks, type PanelId, type PanelLayout } from "./lib/layout";
 import UnsavedDialog from "./components/UnsavedDialog";
 import { isIdentity, validPlacement } from "./lib/placement";
+import { makeTransition, mixTransitions, previousAdjacent, validTransition } from "./lib/transitions";
 import { endDrag, moveDrag, resolveDrop, type DragPayload, type DropSpot } from "./lib/dragMedia";
 import { forgetProject, loadRecent, projectFileName, rememberProject, setRecentThumb, thumbnailSource, type RecentProject } from "./lib/recent";
 import type { AssemblyPlan } from "./lib/autoassemble";
@@ -180,6 +183,9 @@ export default function App() {
     saveLayout({ left: null, right: null, timeline: null });
     setNotice("Painéis de volta ao arranjo padrão.");
   }
+
+  /** Mini-aba aberta no painel Propriedades. */
+  const [propsTab, setPropsTab] = useState<PropsTab>("media");
 
   /** Depois de arrastar uma legenda: aplicar só nela ou em todas? */
   const [captionMoveChoice, setCaptionMoveChoice] = useState<{ captionId: string; x: number; y: number } | null>(null);
@@ -689,6 +695,7 @@ export default function App() {
     setPlaying(false);
     setSelectedCaptionId(captionId);
     setSelectedClipId(null);
+    setPropsTab("captions");
     requestAnimationFrame(() => requestAnimationFrame(() => {
       const field = document.querySelector<HTMLTextAreaElement>("textarea[aria-label='Texto da legenda']");
       if (field) { field.focus(); field.select(); field.scrollIntoView({ block: "nearest" }); }
@@ -704,6 +711,7 @@ export default function App() {
       if (change.fit !== undefined) { if (change.fit === "contain") delete next.fit; else next.fit = change.fit; }
       if (change.motion !== undefined) { if (change.motion) next.motion = change.motion; else delete next.motion; }
       if (change.placement !== undefined) { if (change.placement) next.placement = change.placement; else delete next.placement; }
+      if (change.transition !== undefined) { if (change.transition) next.transition = change.transition; else delete next.transition; }
       for (const which of ["animIn", "animOut"] as const) {
         const value = change[which];
         if (value !== undefined) { if (value) next[which] = value; else delete next[which]; }
@@ -713,7 +721,37 @@ export default function App() {
     }, change.motion ? `motion:${clipId}:${change.motion.preset}`
       : change.animIn ? `anim-in:${clipId}:${change.animIn.type}`
       : change.animOut ? `anim-out:${clipId}:${change.animOut.type}`
-      : change.placement ? `place-field:${clipId}` : undefined);
+      : change.placement ? `place-field:${clipId}`
+      : change.transition ? `transition:${clipId}:${change.transition.type}` : undefined);
+  }
+
+  /** Sorteia entre os tipos escolhidos em todos os cortes (sem repetir em cortes seguidos). */
+  function mixTransitionsOnCuts(types: TransitionType[], duration: number) {
+    const cuts = clipsRefCuts();
+    const mix = mixTransitions(types, cuts.length);
+    const byId = new Map(cuts.map((clip, index) => [clip.id, makeTransition(mix[index], duration)]));
+    editClips((current) => current.map((clip) => byId.has(clip.id) ? { ...clip, transition: byId.get(clip.id)! } : clip));
+    setNotice(`Transições sorteadas em ${cuts.length} corte(s). Ctrl+Z desfaz.`);
+  }
+  /** Cortes (clipe colado no anterior) das trilhas destravadas, em ordem de trilha e de tempo. */
+  function clipsRefCuts() {
+    const current = timelineRef.current.clips;
+    return current.filter((clip) => !isLocked(clip.trackId) && previousAdjacent(clip, current))
+      .sort((a, b) => a.trackId.localeCompare(b.trackId) || a.start - b.start);
+  }
+
+  /** Mesma transição (ou nenhuma) em todos os cortes: clipes colados no anterior, em trilhas destravadas. */
+  function applyTransitionToAllCuts(transition: ClipTransition | null) {
+    let changed = 0;
+    editClips((current) => current.map((clip) => {
+      if (isLocked(clip.trackId) || !previousAdjacent(clip, current)) return clip;
+      const next = { ...clip };
+      if (transition) next.transition = transition; else delete next.transition;
+      if (JSON.stringify(next) === JSON.stringify(clip)) return clip;
+      changed++;
+      return next;
+    }));
+    setNotice(changed ? `${transition ? "Transição aplicada" : "Transição tirada"} em ${changed} corte(s). Ctrl+Z desfaz.` : "Nada para mudar.");
   }
 
   /** Arrastando uma legenda no preview: só ela muda de lugar (um arraste = um passo de desfazer). */
@@ -742,6 +780,11 @@ export default function App() {
       return rest;
     }));
   }
+
+  // Ao selecionar um clipe estando na aba "Mídia", abre os ajustes do clipe.
+  useEffect(() => {
+    if (selectedClipId && propsTab === "media") setPropsTab("frame");
+  }, [selectedClipId]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Clique no preview: seleciona o clipe (e pausa, para editar com calma). */
   function selectClipFromPreview(clipId: string | null) {
@@ -1271,7 +1314,8 @@ export default function App() {
           ...(validMotion(clip.motion) ? { motion: validMotion(clip.motion)! } : {}),
           ...(validAnimation(clip.animIn) ? { animIn: validAnimation(clip.animIn)! } : {}),
           ...(validAnimation(clip.animOut) ? { animOut: validAnimation(clip.animOut)! } : {}),
-          ...(validPlacement(clip.placement) ? { placement: validPlacement(clip.placement)! } : {}) }];
+          ...(validPlacement(clip.placement) ? { placement: validPlacement(clip.placement)! } : {}),
+          ...(validTransition(clip.transition) ? { transition: validTransition(clip.transition)! } : {}) }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
@@ -1407,31 +1451,54 @@ export default function App() {
       <div className="panel-foot"><Layers3 size={14} /> {media.length} itens na biblioteca</div>
     </aside>
   );
+  // Mini-abas do painel Propriedades: uma parte por vez (mídia, enquadrar, animação, transição, legendas).
+  const visualClip = selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" ? selectedClip : null;
+  const clipTab = propsTab === "frame" || propsTab === "animation" || propsTab === "transition";
+  const PROPS_TABS: { id: PropsTab; label: string; full: string; needsClip?: boolean }[] = [
+    { id: "media", label: "Mídia", full: "Arquivo selecionado na biblioteca" },
+    { id: "frame", label: "Quadro", full: "Enquadramento, posição e movimento do clipe", needsClip: true },
+    { id: "animation", label: "Animar", full: "Animação de entrada e saída do clipe", needsClip: true },
+    { id: "transition", label: "Transição", full: "Transição do clipe anterior para este", needsClip: true },
+    { id: "captions", label: "Legendas", full: "Legendas e estilo" },
+  ];
   const propertiesPanel = (
     <aside className="properties-panel panel">
       <div className="panel-heading dock-handle" onPointerDown={(event) => beginPanelDrag(event, "properties")} title="Arraste pelo título para mudar o painel de lugar"><div><span className="eyebrow">AJUSTES</span><h2>Propriedades</h2></div><Settings2 size={17} className="muted-icon" /></div>
-      {selected ? <div className="properties-content">
-        <div className="property-preview">{selected.kind === "image" ? <img src={selected.url} /> : selected.kind === "video" ? <Video size={27} /> : <Music2 size={27} />}</div>
-        <span className="eyebrow">ARQUIVO SELECIONADO</span><h3>{selected.name}</h3>
-        <div className="property-line"><span>Tipo</span><b>{selected.kind}</b></div>
-        <div className="property-line"><span>Tamanho</span><b>{formatSize(selected.size)}</b></div>
-        {selected.duration ? <div className="property-line"><span>Duração</span><b>{formatSeconds(selected.duration)}s</b></div> : null}
-        <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
-        <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
-        {selected.kind !== "audio" && <button className="button secondary full overlay-add" onClick={() => addAsOverlay(selected)}
-          title="Coloca no playhead, numa trilha por cima, menor e centralizada (PNG, GIF, logo, vídeo…)"><Layers size={15} /> Sobreposição no playhead</button>}
-      </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo para ver suas propriedades e opções.</span></div>}
-      {selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" && <EffectsPanel clip={selectedClip} locked={isLocked(selectedClip.trackId)}
+      <div className="props-tabs" role="tablist" aria-label="Ajustes">
+        {PROPS_TABS.map((tab) => <button key={tab.id} role="tab" aria-selected={propsTab === tab.id}
+          className={`props-tab ${propsTab === tab.id ? "active" : ""} ${tab.needsClip && !visualClip ? "dim" : ""}`}
+          title={tab.needsClip && !visualClip ? `${tab.full} — selecione um clipe de imagem ou vídeo na timeline` : tab.full}
+          onClick={() => setPropsTab(tab.id)}>{tab.label}</button>)}
+      </div>
+      {propsTab === "media" && <>
+        {selected ? <div className="properties-content">
+          <div className="property-preview">{selected.kind === "image" ? <img src={selected.url} /> : selected.kind === "video" ? <Video size={27} /> : <Music2 size={27} />}</div>
+          <span className="eyebrow">ARQUIVO SELECIONADO</span><h3>{selected.name}</h3>
+          <div className="property-line"><span>Tipo</span><b>{selected.kind}</b></div>
+          <div className="property-line"><span>Tamanho</span><b>{formatSize(selected.size)}</b></div>
+          {selected.duration ? <div className="property-line"><span>Duração</span><b>{formatSeconds(selected.duration)}s</b></div> : null}
+          <div className="property-line"><span>Formato do projeto</span><b>{ratio}</b></div>
+          <button className="button primary full" onClick={() => addToTimeline(selected)}><Plus size={15} /> Adicionar à timeline</button>
+          {selected.kind !== "audio" && <button className="button secondary full overlay-add" onClick={() => addAsOverlay(selected)}
+            title="Coloca no playhead, numa trilha por cima, menor e centralizada (PNG, GIF, logo, vídeo…)"><Layers size={15} /> Sobreposição no playhead</button>}
+        </div> : <div className="properties-empty"><WandSparkles size={25} /><strong>Nada selecionado</strong><span>Escolha um arquivo na biblioteca para ver suas propriedades.</span></div>}
+        <div className="tools-card"><div className="tools-title"><Sparkles size={15} /> Ferramentas planejadas</div><div className="tool-row"><span>Correção de cor</span><small>Em breve</small></div><div className="tool-row"><span>Mixagem de áudio</span><small>Em breve</small></div></div>
+      </>}
+      {clipTab && (visualClip ? <EffectsPanel section={propsTab as EffectsSection} clip={visualClip} locked={isLocked(visualClip.trackId)}
         imageClipCount={clips.filter((clip) => mediaOf(clip.mediaId)?.kind === "image").length}
-        onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} onCopyAnimations={copyAnimationsToImages} />}
-      <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
-        onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />
+        onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} onCopyAnimations={copyAnimationsToImages}
+        hasPrevious={Boolean(previousAdjacent(visualClip, clips))}
+        cutCount={clips.filter((clip) => !isLocked(clip.trackId) && previousAdjacent(clip, clips)).length}
+        onApplyTransitionAll={applyTransitionToAllCuts} onMixTransitions={mixTransitionsOnCuts} />
+        : <div className="properties-empty"><Clapperboard size={25} /><strong>Nenhum clipe selecionado</strong>
+          <span>Clique num clipe de imagem ou vídeo na timeline (ou no preview) para ajustar {propsTab === "frame" ? "o enquadramento" : propsTab === "animation" ? "a animação" : "a transição"}.</span></div>)}
+      {propsTab === "captions" && <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
+        onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />}
       <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {
         const file = event.target.files?.[0];
         event.target.value = "";
         if (file) loadCaptionText(await file.text(), file.name);
       }} />
-      <div className="tools-card"><div className="tools-title"><Sparkles size={15} /> Ferramentas planejadas</div><div className="tool-row"><span>Transições</span><small>Em breve</small></div><div className="tool-row"><span>Correção de cor</span><small>Em breve</small></div><div className="tool-row"><span>Mixagem de áudio</span><small>Em breve</small></div></div>
     </aside>
   );
   const panelOf = (id: PanelId) => id === "library" ? libraryPanel : propertiesPanel;
@@ -1542,6 +1609,12 @@ export default function App() {
             onSetTrackVolume={setTrackVolume}
             onMoveClip={moveClip}
             onDropMedia={dropMedia}
+            onAddTransition={(clipId) => {
+              updateClipEffects(clipId, { transition: makeTransition("dissolve") });
+              setSelectedClipId(clipId);
+              setSelectedCaptionId(null);
+              setNotice("Transição “Dissolver” adicionada. Ajuste o tipo e a duração em Propriedades.");
+            }}
             onRemoveClip={removeClip}
             onPlayheadChange={movePlayhead}
             onNotice={setNotice}

@@ -1,20 +1,31 @@
 import { useState } from "react";
 import { cleanPlacement, isIdentity, placementOf } from "../lib/placement";
-import { Move, Sparkles } from "lucide-react";
-import type { AnimationType, ClipAnimation, ClipFit, ClipMotion, MotionPreset, TimelineClip, ClipPlacement } from "../types";
+import { DEFAULT_TRANSITION_DURATION, makeTransition, MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION, TRANSITION_TYPES } from "../lib/transitions";
+import { Clapperboard, Move, Shuffle, Sparkles } from "lucide-react";
+import type { AnimationType, ClipAnimation, ClipFit, ClipMotion, MotionPreset, TimelineClip, ClipPlacement, ClipTransition, TransitionType } from "../types";
 import { ANIMATION_TYPES, DEFAULT_ANIMATION_DURATION, effectiveAnimations, makeAnimation, MAX_ANIMATION_DURATION, MIN_ANIMATION_DURATION } from "../lib/animations";
 import { DEFAULT_FIT, DEFAULT_INTENSITY, makeMotion, MOTION_PRESETS } from "../lib/effects";
 
-export type EffectsChange = { motion?: ClipMotion | null; fit?: ClipFit; animIn?: ClipAnimation | null; animOut?: ClipAnimation | null; placement?: ClipPlacement | null };
+export type EffectsChange = { motion?: ClipMotion | null; fit?: ClipFit; animIn?: ClipAnimation | null; animOut?: ClipAnimation | null; placement?: ClipPlacement | null; transition?: ClipTransition | null };
 export type ApplyAllOptions = { choice: MotionPreset | "alternate"; intensity: number; smooth: boolean; fit: ClipFit | null };
+/** Qual parte do clipe o painel mostra (cada uma é uma mini-aba em Propriedades). */
+export type EffectsSection = "frame" | "animation" | "transition";
 
 type Props = {
+  section: EffectsSection;
   clip: TimelineClip;
   locked: boolean;
   imageClipCount: number;
   onChange: (clipId: string, change: EffectsChange) => void;
   onApplyAll: (options: ApplyAllOptions) => void;
   onCopyAnimations: (clipId: string) => void;
+  /** Há um clipe colado antes deste na mesma trilha (dá para ter transição). */
+  hasPrevious: boolean;
+  /** Quantos cortes (clipes colados) existem nas trilhas destravadas. */
+  cutCount: number;
+  onApplyTransitionAll: (transition: ClipTransition | null) => void;
+  /** Sorteia entre os tipos escolhidos em todos os cortes. */
+  onMixTransitions: (types: TransitionType[], duration: number) => void;
 };
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
@@ -40,8 +51,9 @@ function AnimationField({ which, clip, onChange }: { which: "animIn" | "animOut"
   </>;
 }
 
-/** Enquadramento e movimento (Ken Burns) do clipe selecionado, no painel de propriedades. */
-export default function EffectsPanel({ clip, locked, imageClipCount, onChange, onApplyAll, onCopyAnimations }: Props) {
+/** Ajustes do clipe selecionado: uma parte por mini-aba (enquadrar, animação ou transição). */
+export default function EffectsPanel(props: Props) {
+  const { section, clip, locked, imageClipCount, onChange, onApplyAll, onCopyAnimations } = props;
   const motion = clip.motion;
   const preset: MotionPreset = motion?.preset ?? "none";
   const intensity = motion?.intensity ?? DEFAULT_INTENSITY;
@@ -51,6 +63,26 @@ export default function EffectsPanel({ clip, locked, imageClipCount, onChange, o
 
   const setMotion = (nextPreset: MotionPreset, nextIntensity = intensity, nextSmooth = smooth) =>
     onChange(clip.id, { motion: makeMotion(nextPreset, nextIntensity, nextSmooth) });
+
+  if (section === "transition") return <div className="tools-card effects-card">
+    <div className="tools-title"><Clapperboard size={15} /> Transição</div>
+    <fieldset disabled={locked} className="effects-fields">
+      <TransitionField {...props} />
+    </fieldset>
+  </div>;
+
+  if (section === "animation") return <div className="tools-card effects-card">
+    <div className="tools-title"><Sparkles size={15} /> Animação de entrada e saída</div>
+    <fieldset disabled={locked} className="effects-fields">
+      <AnimationField which="animIn" clip={clip} onChange={onChange} />
+      <AnimationField which="animOut" clip={clip} onChange={onChange} />
+    </fieldset>
+    {imageClipCount > 1 && <div className="effects-batch">
+      <button className="button secondary compact full-width" onClick={() => onCopyAnimations(clip.id)}
+        title="Copia a entrada e a saída deste clipe para todas as imagens de trilhas destravadas. Ctrl+Z desfaz.">
+        Copiar entrada e saída para todas as imagens</button>
+    </div>}
+  </div>;
 
   return <div className="tools-card effects-card">
     <div className="tools-title"><Move size={15} /> Enquadramento e movimento</div>
@@ -77,11 +109,6 @@ export default function EffectsPanel({ clip, locked, imageClipCount, onChange, o
         <label className="caption-setting check"><input type="checkbox" checked={smooth} onChange={(event) => setMotion(preset, intensity, event.target.checked)} /> Suavizar início e fim</label>
       </>}
       {motion && fit === "contain" && <p className="captions-hint">Dica: com “Preencher” o movimento não mostra as bordas da imagem.</p>}
-      <div className="effects-anim">
-        <div className="tools-title small">Animação de entrada e saída</div>
-        <AnimationField which="animIn" clip={clip} onChange={onChange} />
-        <AnimationField which="animOut" clip={clip} onChange={onChange} />
-      </div>
     </fieldset>
 
     {imageClipCount > 1 && <div className="effects-batch">
@@ -94,9 +121,6 @@ export default function EffectsPanel({ clip, locked, imageClipCount, onChange, o
       <button className="button secondary compact full-width" onClick={() => onApplyAll({ choice: batchChoice, intensity, smooth, fit: batchChoice === "none" ? null : "cover" })}
         title="Aplica em todas as imagens de trilhas destravadas (e usa “Preencher”). Ctrl+Z desfaz.">
         Aplicar em todas as imagens</button>
-      <button className="button secondary compact full-width" onClick={() => onCopyAnimations(clip.id)}
-        title="Copia a entrada e a saída deste clipe para todas as imagens de trilhas destravadas. Ctrl+Z desfaz.">
-        Copiar entrada e saída para todas</button>
     </div>}
   </div>;
 }
@@ -124,4 +148,43 @@ function PlacementFields({ clip, onChange }: { clip: TimelineClip; onChange: (cl
     {field("Rotação", p.rotation, (value) => set({ rotation: value }), "°", 5)}
     <small>Ou arraste no preview: o meio move, os cantos mudam o tamanho e a bolinha gira (Shift: de 15 em 15°).</small>
   </div>;
+}
+
+/** Transição do clipe anterior (colado na mesma trilha) para este, e o sorteio em todos os cortes. */
+function TransitionField({ clip, hasPrevious, cutCount, onChange, onApplyTransitionAll, onMixTransitions }: Props) {
+  const current = clip.transition;
+  const duration = current?.duration ?? DEFAULT_TRANSITION_DURATION;
+  const [picks, setPicks] = useState<TransitionType[]>(["dissolve", "push-left", "zoom-in", "circle-open"]);
+  const set = (type: TransitionType | "none", nextDuration = duration) =>
+    onChange(clip.id, { transition: type === "none" ? null : makeTransition(type, nextDuration) });
+  const toggle = (type: TransitionType) => setPicks((list) => list.includes(type) ? list.filter((entry) => entry !== type) : [...list, type]);
+  return <>
+    {!hasPrevious ? <p className="captions-hint">Para ter transição, este clipe precisa começar colado no fim de outro, na mesma trilha.
+      Use o “+” que aparece no corte da timeline.</p> : <>
+      <label className="caption-setting"><span>Tipo</span>
+        <select value={current?.type ?? "none"} onChange={(event) => set(event.target.value as TransitionType | "none")}>
+          <option value="none">Corte seco</option>
+          {TRANSITION_TYPES.map((entry) => <option key={entry.id} value={entry.id}>{entry.label}</option>)}
+        </select></label>
+      {current && <label className="caption-setting"><span>Duração</span>
+        <input type="range" min={MIN_TRANSITION_DURATION} max={MAX_TRANSITION_DURATION} step={0.1} value={duration}
+          aria-label="Duração da transição" onChange={(event) => set(current.type, Number(event.target.value))} />
+        <b>{String(duration).replace(".", ",")}s</b></label>}
+    </>}
+    {cutCount > 1 && <>
+      <button className="button secondary compact full-width" onClick={() => onApplyTransitionAll(current ?? null)}
+        title="Usa a mesma transição (ou o corte seco) em todos os cortes das trilhas destravadas. Ctrl+Z desfaz.">
+        {current ? "Usar esta transição em todos os cortes" : "Tirar a transição de todos os cortes"} ({cutCount})</button>
+      <div className="transition-mix">
+        <div className="tools-title small"><Shuffle size={13} /> Sortear nos cortes</div>
+        <div className="mix-chips">
+          {TRANSITION_TYPES.map((entry) => <button key={entry.id} type="button" className={`mix-chip ${picks.includes(entry.id) ? "on" : ""}`}
+            aria-pressed={picks.includes(entry.id)} onClick={() => toggle(entry.id)}>{entry.label.replace(/ \(.*\)$/, "")}</button>)}
+        </div>
+        <button className="button secondary compact full-width" disabled={!picks.length} onClick={() => onMixTransitions(picks, duration)}
+          title="Cada corte ganha uma das escolhidas, sem repetir a mesma em cortes seguidos. Ctrl+Z desfaz.">
+          Sortear em todos os cortes ({cutCount})</button>
+      </div>
+    </>}
+  </>;
 }

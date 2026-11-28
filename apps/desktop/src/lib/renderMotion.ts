@@ -1,4 +1,5 @@
-import type { AnimationType, ClipMotion, TimelineClip } from "../types";
+import type { AnimationType, ClipMotion, ClipTransition, TimelineClip } from "../types";
+import { transitionMotionExpr, transitionMoves } from "./transitions";
 import { effectiveAnimations } from "./animations";
 
 /**
@@ -58,22 +59,40 @@ function exitExpr(type: AnimationType, duration: number, length: number): Expr {
 const combine = (a: Expr, b: Expr): Expr =>
   ({ opacity: mul(a.opacity, b.opacity), scale: mul(a.scale, b.scale), x: add(a.x, b.x), y: add(a.y, b.y) });
 
-/** Transformação total do clipe: zoom S e deslocamento (X, Y) em fração do quadro. */
-export type ClipTransformExpr = { scale: string; x: string; y: string; opacity: string; fades: boolean };
+/**
+ * Transformação total do clipe: zoom S (com achatamento sx/sy, usado no "virar") e deslocamento (X, Y)
+ * em fração do quadro.
+ */
+export type ClipTransformExpr = { scale: string; sx: string; sy: string; x: string; y: string; opacity: string; fades: boolean };
 
-export function clipTransformExpr(clip: Pick<TimelineClip, "duration" | "motion" | "animIn" | "animOut">, length = clip.duration): ClipTransformExpr | null {
-  if (!clip.motion && !clip.animIn && !clip.animOut) return null;
+/** Transições que mexem neste clipe: a de entrada (no começo) e a do próximo clipe (depois do fim). */
+export type TransitionTerms = { incoming?: ClipTransition | null; outgoing?: ClipTransition | null };
+
+export function clipTransformExpr(clip: Pick<TimelineClip, "duration" | "motion" | "animIn" | "animOut">, length = clip.duration,
+  transitions: TransitionTerms = {}): ClipTransformExpr | null {
+  const incoming = transitions.incoming && transitionMoves(transitions.incoming.type) ? transitions.incoming : null;
+  const outgoing = transitions.outgoing && transitionMoves(transitions.outgoing.type) ? transitions.outgoing : null;
+  if (!clip.motion && !clip.animIn && !clip.animOut && !incoming && !outgoing) return null;
   const kb = clip.motion ? motionExpr(clip.motion, length) : STILL;
   const { inDur, outDur } = effectiveAnimations({ ...clip, duration: length });
   let anim = STILL;
   if (clip.animIn && inDur > 0) anim = combine(anim, entryExpr(clip.animIn.type, inDur));
   if (clip.animOut && outDur > 0) anim = combine(anim, exitExpr(clip.animOut.type, outDur, length));
+  // Transição por fora de tudo: translate(tr) scale(ts·sx, ts·sy), depois a animação e o Ken Burns.
+  let tr = { s: "1", sx: "1", sy: "1", x: "0", y: "0" };
+  const join = (a: typeof tr, b: typeof tr) => ({ s: mul(a.s, b.s), sx: mul(a.sx, b.sx), sy: mul(a.sy, b.sy), x: add(a.x, b.x), y: add(a.y, b.y) });
+  if (incoming) tr = join(tr, transitionMotionExpr(incoming.type, `clip(t/${n(incoming.duration)},0,1)`).in);
+  if (outgoing) tr = join(tr, transitionMotionExpr(outgoing.type, `clip((t-${n(length)})/${n(outgoing.duration)},0,1)`).out);
   // CSS: translate(a) scale(as) scale(s) translate(x) → desloca a + as·s·x, zoom as·s.
-  const scale = mul(anim.scale, kb.scale);
+  const inner = mul(anim.scale, kb.scale);
+  const innerX = add(anim.x, mul(inner, kb.x));
+  const innerY = add(anim.y, mul(inner, kb.y));
   return {
-    scale,
-    x: add(anim.x, mul(scale, kb.x)),
-    y: add(anim.y, mul(scale, kb.y)),
+    scale: mul(tr.s, inner),
+    sx: tr.sx,
+    sy: tr.sy,
+    x: add(tr.x, mul(mul(tr.s, tr.sx), innerX)),
+    y: add(tr.y, mul(mul(tr.s, tr.sy), innerY)),
     opacity: anim.opacity,
     fades: anim.opacity !== "1",
   };
@@ -90,11 +109,11 @@ export function motionFilters(
 ): string[] {
   const { width, height, fps, length, factor } = size;
   const bigW = width * factor, bigH = height * factor;
-  const dim = (base: number) => `max(2,trunc(${base}*${expr.scale}/2)*2)`;
+  const dim = (base: number, squash: string) => `max(2,trunc(${base}*${mul(expr.scale, squash)}/2)*2)`;
   const chains = [
     // Fundo transparente: o que sobra em volta mostra as trilhas de baixo.
     `color=c=black@0:s=${bigW}x${bigH}:r=${fps}:d=${n(length)},format=yuva420p[bg${id}]`,
-    `[${input}]scale=w='${dim(bigW)}':h='${dim(bigH)}':eval=frame:flags=bicubic[sc${id}]`,
+    `[${input}]scale=w='${dim(bigW, expr.sx)}':h='${dim(bigH, expr.sy)}':eval=frame:flags=bicubic[sc${id}]`,
   ];
   let tail = `[bg${id}][sc${id}]overlay=x='(W-w)/2+W*${expr.x}':y='(H-h)/2+H*${expr.y}':eval=frame:shortest=1`;
   if (factor !== 1) tail += `,scale=${width}:${height}:flags=area`;

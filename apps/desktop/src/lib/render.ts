@@ -3,6 +3,7 @@ import { clipEnd, clipSpeed } from "./timeline";
 import { clipVolume, effectiveFades, trackVolume } from "./audio";
 import { clipTransformExpr, fadeBlend, motionFilters } from "./renderMotion";
 import { effectiveAnimations } from "./animations";
+import { effectiveTransition, extensionAfter, outgoingTransition, transitionBlendExprs } from "./transitions";
 import { buildAssCaptions } from "./assCaptions";
 import { isIdentity, placementFilters } from "./placement";
 
@@ -132,46 +133,68 @@ export function buildRenderPlan(
     const showsImage = track.kind === "video" && !track.hidden && item.kind !== "audio" && probe.hasVideo;
     const hasSound = !track.muted && item.kind !== "image" && probe.hasAudio;
     if (!showsImage && !hasSound) return;
+    // Transição para o próximo clipe: a imagem deste continua por baixo durante ela (o som não).
+    const extension = showsImage ? Math.max(0, Math.min(extensionAfter(clip, state.clips), total - clip.start - length)) : 0;
+    const visible = length + extension;
 
     const index = inputs.filter((arg) => arg === "-i").length;
     sources.add(item.path);
     // GIF: animação repetida até o fim do clipe; outras imagens: um quadro repetido.
-    if (item.kind === "image" && isGif(item.path)) inputs.push("-stream_loop", "-1", "-t", num(length), "-i", item.path);
-    else if (item.kind === "image") inputs.push("-loop", "1", "-framerate", String(fps), "-t", num(length), "-i", item.path);
-    else inputs.push("-ss", num(clip.inPoint), "-t", num(length * speed + 0.5), "-i", item.path);
+    if (item.kind === "image" && isGif(item.path)) inputs.push("-stream_loop", "-1", "-t", num(visible), "-i", item.path);
+    else if (item.kind === "image") inputs.push("-loop", "1", "-framerate", String(fps), "-t", num(visible), "-i", item.path);
+    else inputs.push("-ss", num(clip.inPoint), "-t", num(visible * speed + 0.5), "-i", item.path);
 
     if (showsImage) {
       const label = `v${overlays}`;
       const timing = item.kind === "image"
-        ? `trim=duration=${num(length)},setpts=PTS-STARTPTS`
-        : `trim=duration=${num(length * speed)},setpts=(PTS-STARTPTS)/${num(speed)}`;
-      const prepared = `[${index}:v]${timing},fps=${fps},${fitFilter(clip, width, height)},setsar=1`;
+        ? `trim=duration=${num(visible)},setpts=PTS-STARTPTS`
+        : `trim=duration=${num(visible * speed)},setpts=(PTS-STARTPTS)/${num(speed)}`;
+      // Vídeo que acaba antes do fim da transição: segura o último quadro.
+      const hold = extension > 0 && item.kind !== "image" ? `,tpad=stop_mode=clone:stop_duration=${num(extension)},trim=duration=${num(visible)}` : "";
+      const prepared = `[${index}:v]${timing},fps=${fps}${hold},${fitFilter(clip, width, height)},setsar=1`;
       // Posição/tamanho/rotação (edição no preview): por último, por fora do movimento.
       const placed = isIdentity(clip.placement) ? { filters: [], x: "0", y: "0" } : placementFilters(clip.placement!, width, height);
       if (!placed) return; // ficou toda fora do quadro
       const place = placed.filters.length ? `,${placed.filters.join(",")}` : "";
-      const transform = clipTransformExpr(clip, length);
+      const transition = effectiveTransition(clip, state.clips);
+      const transform = clipTransformExpr(clip, length, { incoming: transition?.transition, outgoing: extension > 0 ? outgoingTransition(clip, state.clips) : null });
       if (!transform) chains.push(`${prepared}${place},setpts=PTS+${num(clip.start)}/TB[${label}]`);
       else {
         // Ken Burns e entrada/saída: em resolução dobrada (até 1080p) para o movimento não tremer.
         const factor = width * height <= 1920 * 1080 ? 2 : 1;
         chains.push(`${prepared}[f${overlays}]`);
-        chains.push(...motionFilters(transform, `f${overlays}`, `m${overlays}`, String(overlays), { width, height, fps, length, factor }));
+        chains.push(...motionFilters(transform, `f${overlays}`, `m${overlays}`, String(overlays), { width, height, fps, length: visible, factor }));
         chains.push(`[m${overlays}]format=yuva420p${place},setpts=PTS+${num(clip.start)}/TB[${label}]`);
       }
       const next = `o${overlays}`;
       const at = placed.x === "0" && placed.y === "0" ? "" : `x='${placed.x}':y='${placed.y}':`;
-      const overlay = `overlay=${at}eof_action=pass:enable='between(t,${num(clip.start)},${num(clip.start + length)})'`;
-      if (transform?.fades) {
-        // Fade revelando as camadas de baixo: mistura "com" e "sem" a camada só na entrada/saída.
-        const { inDur, outDur } = effectiveAnimations({ ...clip, duration: length });
-        const windows: [number, number][] = [];
-        if (clip.animIn && inDur > 0) windows.push([clip.start, clip.start + inDur]);
-        if (clip.animOut && outDur > 0) windows.push([clip.start + length - outDur, clip.start + length]);
-        const blend = fadeBlend(transform.opacity, clip.start, windows);
+      const overlay = `overlay=${at}eof_action=pass:enable='between(t,${num(clip.start)},${num(clip.start + visible)})'`;
+      const transitionPlanes = transition ? transitionBlendExprs(transition.transition.type, clip.start, transition.transition.duration) : null;
+      const transitionBlends = Boolean(transitionPlanes && transitionPlanes.some((plane) => plane !== "A"));
+      if (transform?.fades || transitionBlends) {
+        // Mistura "com" (A) e "sem" (B) esta camada: fades revelando as camadas de baixo e a transição
+        // do clipe anterior (que continua por baixo). Só nos trechos em que acontecem.
+        let planes: [string, string, string] = ["A", "A", "A"];
+        const enable: string[] = [];
+        if (transform?.fades) {
+          const { inDur, outDur } = effectiveAnimations({ ...clip, duration: length });
+          const windows: [number, number][] = [];
+          if (clip.animIn && inDur > 0) windows.push([clip.start, clip.start + inDur]);
+          if (clip.animOut && outDur > 0) windows.push([clip.start + length - outDur, clip.start + length]);
+          const blend = fadeBlend(transform.opacity, clip.start, windows);
+          planes = [blend.expr, blend.expr, blend.expr];
+          if (blend.enable) enable.push(blend.enable);
+        }
+        if (transition && transitionPlanes && transitionBlends) {
+          const { duration } = transition.transition;
+          const exprs = transitionPlanes;
+          const inside = `between(T,${num(clip.start)},${num(clip.start + duration)})`;
+          planes = planes.map((other, i) => other === "A" ? exprs[i] : `if(${inside},${exprs[i]},${other})`) as [string, string, string];
+          enable.push(`between(t,${num(clip.start)},${num(clip.start + duration)})`);
+        }
         chains.push(`[${current}]split[keep${overlays}][under${overlays}]`);
         chains.push(`[under${overlays}][${label}]${overlay}[ov${overlays}]`);
-        chains.push(`[ov${overlays}][keep${overlays}]blend=all_expr='${blend.expr}':enable='${blend.enable}'[${next}]`);
+        chains.push(`[ov${overlays}][keep${overlays}]blend=c0_expr='${planes[0]}':c1_expr='${planes[1]}':c2_expr='${planes[2]}':enable='${enable.join("+")}'[${next}]`);
       } else {
         chains.push(`[${current}][${label}]${overlay}[${next}]`);
       }

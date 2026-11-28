@@ -55,7 +55,14 @@ export type TimelineClip = {
   animOut?: ClipAnimation;
   /** Posição, tamanho e rotação no quadro (edição direta no preview). Ausente = centralizado, sem rotação. */
   placement?: ClipPlacement;
+  /** Transição de entrada: do clipe anterior colado (mesma trilha) para este. Ausente = corte seco. */
+  transition?: ClipTransition;
 };
+
+export type TransitionType = "dissolve" | "fade-black" | "wipe-left" | "wipe-right" | "wipe-up" | "wipe-down"
+  | "push-left" | "push-right" | "push-up" | "push-down" | "circle-open" | "circle-close"
+  | "zoom-in" | "zoom-out" | "flip-x" | "flip-y";
+export type ClipTransition = { type: TransitionType; duration: number };
 
 export type ClipPlacement = { x: number; y: number; scale: number; rotation: number };
 

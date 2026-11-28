@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { MonitorPlay } from "lucide-react";
+import { Fragment } from "react";
 import type { ClipPlacement, MediaItem, TimelineClip, Track } from "../types";
 import { clipsAt } from "../lib/tracks";
 import { clipSpeed } from "../lib/timeline";
 import { clipGainAt, trackVolume } from "../lib/audio";
 import { clipFrameAt, DEFAULT_FIT, frameTransform } from "../lib/effects";
 import { animationTransform, clipAnimationAt } from "../lib/animations";
+import { effectiveTransition, motionTransform, transitionLook, transitionMotion, transitionProgress, type TransitionMotion } from "../lib/transitions";
 import { cleanPlacement, contentSize, hitsPlaced, placedCorners, placementOf, placementTransform, snapRotation, snapValue } from "../lib/placement";
 
 /** Tolerância de dessincronia antes de reposicionar a mídia (segundos). */
@@ -145,6 +147,18 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
   }
   const layerIds = new Set(layers.map((layer) => layer.clip.id));
 
+  // Transições: no começo de um clipe com transição, o anterior (colado na mesma trilha) aparece por baixo.
+  type Drawn = Layer & { incoming?: ReturnType<typeof transitionLook>; outgoing?: boolean; motion?: TransitionMotion };
+  const drawn: Drawn[] = layers.flatMap((layer): Drawn[] => {
+    const effective = effectiveTransition(layer.clip, clips);
+    const p = effective ? transitionProgress(layer.clip, effective.transition, playhead) : null;
+    const fromItem = effective ? playable(effective.from) : null;
+    if (!effective || p === null || !fromItem) return [layer];
+    const motion = transitionMotion(effective.transition.type, p);
+    return [{ clip: effective.from, item: fromItem, track: layer.track, outgoing: true, motion: motion.out },
+      { ...layer, incoming: transitionLook(effective.transition.type, p), motion: motion.in }];
+  });
+
   // Fontes de som: vídeos (exceto os visíveis, que já tocam no próprio elemento) e áudios.
   const sounds = active.filter((clip) => {
     const item = playable(clip);
@@ -152,6 +166,15 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
     return !layerIds.has(clip.id) && item && item.kind !== "image" && track && !track.muted;
   });
 
+  // Cortina e círculo: recorte em coordenadas do quadro (raio do círculo em px da meia-diagonal).
+  const transitionMask = (look: ReturnType<typeof transitionLook>): CSSProperties => {
+    if (look.clipPath) return { clipPath: look.clipPath };
+    if (!look.circle) return {};
+    const radius = Math.max(0, look.circle.radius * Math.hypot(frame.width, frame.height) / 2);
+    if (look.circle.open) return { clipPath: `circle(${radius.toFixed(1)}px at 50% 50%)` };
+    const mask = `radial-gradient(circle at 50% 50%, transparent ${radius.toFixed(1)}px, #000 ${(radius + 0.5).toFixed(1)}px)`;
+    return { maskImage: mask, WebkitMaskImage: mask };
+  };
   const sizeOf = (layer: Layer) => contentSize(layer.clip.fit ?? DEFAULT_FIT, aspects.get(layer.item.id) ?? null, frameAspect);
   const selectedLayer = layers.find((layer) => layer.clip.id === selectedClipId) ?? null;
   const corners = selectedLayer && frame.width ? placedCorners(sizeOf(selectedLayer), placementOf(selectedLayer.clip), frame) : null;
@@ -255,19 +278,25 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
       <strong>{clips.length ? "Nada na timeline neste ponto" : "A timeline está vazia"}</strong>
       <span>{clips.length ? "Mova o playhead para um trecho com clipes." : "Adicione clipes para ver a montagem aqui."}</span>
     </div>}
-    {layers.map(({ clip, item, track }) => {
+    {drawn.map(({ clip, item, track, incoming, outgoing, motion }) => {
       // Enquadramento e movimento (Ken Burns) no instante do playhead.
       // A animação de entrada/saída fica por fora do Ken Burns; a posição fica por fora de tudo (na camada).
       const anim = clipAnimationAt(clip, playhead);
-      const transform = [animationTransform(anim), frameTransform(clipFrameAt(clip, playhead))].filter(Boolean).join(" ");
-      const style: CSSProperties = { objectFit: clip.fit ?? DEFAULT_FIT, transform: transform || undefined, ...(anim.opacity < 1 ? { opacity: anim.opacity } : {}) };
-      return <div key={clip.id} className="preview-layer" style={{ transform: placementTransform(clip.placement) }}>
+      const transform = [motion ? motionTransform(motion) : undefined, animationTransform(anim), frameTransform(clipFrameAt(clip, playhead))].filter(Boolean).join(" ");
+      const opacity = anim.opacity * (incoming ? (incoming.hideIncoming ? 0 : incoming.opacity) : 1);
+      const style: CSSProperties = { objectFit: clip.fit ?? DEFAULT_FIT, transform: transform || undefined, ...(opacity < 1 ? { opacity } : {}) };
+      const layer = <div className="preview-layer" style={{ transform: placementTransform(clip.placement) }}>
         {item.kind === "image"
           ? <img className="preview-media" style={style} src={item.url} alt="" draggable={false}
               onLoad={(event) => { const img = event.currentTarget; if (img.naturalWidth && img.naturalHeight) rememberAspect(item.id, img.naturalWidth / img.naturalHeight); }} />
           : <SyncedMedia kind="video" url={item.url} clip={clip} playhead={playhead} playing={playing}
-              muted={track.muted} volume={gainOf(clip)} visible style={style} onAspect={(aspect) => rememberAspect(item.id, aspect)} />}
+              muted={track.muted || Boolean(outgoing)} volume={gainOf(clip)} visible style={style} onAspect={(aspect) => rememberAspect(item.id, aspect)} />}
       </div>;
+      // Cortina: recorta o clipe novo no quadro (fora da posição dele); Escurecer: véu preto por cima.
+      return <Fragment key={clip.id}>
+        {incoming?.clipPath || incoming?.circle ? <div className="preview-transition-clip" style={transitionMask(incoming)}>{layer}</div> : layer}
+        {incoming && incoming.veil > 0 && <div className="preview-transition-veil" style={{ opacity: incoming.veil }} />}
+      </Fragment>;
     })}
     {sounds.map((clip) => {
       const item = playable(clip)!;

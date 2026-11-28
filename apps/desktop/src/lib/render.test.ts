@@ -89,3 +89,32 @@ describe("plano de exportação", () => {
     expect(plan.inputs.indexOf("D:/m/vid")).toBeLessThan(plan.inputs.indexOf("D:/m/img"));
   });
 });
+
+describe("transições na exportação", () => {
+  it("o anterior continua por baixo (imagem e som separados) e o novo entra misturado", () => {
+    const state: TimelineState = {
+      tracks: [track("v1", "video")],
+      clips: [clip("a", "vid", "v1", 0, 4), clip("b", "img", "v1", 4, 3, { transition: { type: "dissolve", duration: 1 } })],
+      captions: [],
+    };
+    const plan = buildRenderPlan(state, [item("vid", "video"), item("img", "image")], probes, settings, 7);
+    // vídeo anterior: lê 1 s a mais e segura o último quadro se acabar
+    expect(plan.inputs.slice(0, 6)).toEqual(["-ss", "0", "-t", "5.5", "-i", "D:/m/vid"]);
+    expect(plan.filter).toContain("tpad=stop_mode=clone:stop_duration=1,trim=duration=5");
+    expect(plan.filter).toContain("enable='between(t,0,5)'");
+    // som do anterior não se estende
+    expect(plan.filter).toContain("atrim=duration=4,");
+    // novo clipe: mistura só durante a transição
+    expect(plan.filter).toMatch(/blend=c0_expr='A\*clip\(\(T-4\)\/1,0,1\)\+B\*\(1-clip\(\(T-4\)\/1,0,1\)\)':.*:enable='between\(t,4,5\)'/);
+  });
+  it("sem clipe colado antes, a transição é ignorada", () => {
+    const state: TimelineState = {
+      tracks: [track("v1", "video")],
+      clips: [clip("a", "vid", "v1", 0, 4), clip("b", "img", "v1", 4.5, 3, { transition: { type: "dissolve", duration: 1 } })],
+      captions: [],
+    };
+    const plan = buildRenderPlan(state, [item("vid", "video"), item("img", "image")], probes, settings, 7.5);
+    expect(plan.filter).not.toContain("blend=");
+    expect(plan.filter).not.toContain("tpad=");
+  });
+});

@@ -15,6 +15,7 @@ import { freeBounds, trackKindFor, trackLabel } from "../lib/tracks";
 import { clipVolume, effectiveFades, formatPercent, trackVolume } from "../lib/audio";
 import ClipWaveform from "./ClipWaveform";
 import CaptionLane, { CaptionEditBar } from "./CaptionLane";
+import { previousAdjacent, TRANSITION_TYPES } from "../lib/transitions";
 import { MEDIA_DRAG_EVENT, setDropResolver, type DragPayload, type DragState as MediaDragState, type DropSpot } from "../lib/dragMedia";
 
 const TRACK_LABEL_PX = 104;
@@ -83,6 +84,8 @@ type Props = {
   onAddTrack: (kind: TrackKind) => void;
   onRemoveTrack: (trackId: string) => void;
   onToggleTrack: (trackId: string, flag: TrackFlag) => void;
+  /** Adiciona a transição padrão no corte antes deste clipe (e o seleciona). */
+  onAddTransition: (clipId: string) => void;
   /** Mídia arrastada e solta numa trilha (ou numa trilha nova do tipo dado), no instante `start`. */
   onDropMedia: (mediaId: string, target: string | TrackKind, start: number) => void;
 };
@@ -385,6 +388,21 @@ export default function Timeline(props: Props) {
   }
 
   // ---- Render --------------------------------------------------------------------
+  /** Cortes entre clipes colados: losango = tem transição (clique abre); "+" = adicionar (Dissolver). */
+  function renderCuts(track: Track) {
+    return clips.filter((clip) => clip.trackId === track.id && previousAdjacent(clip, clips)).map((clip) => {
+      const has = Boolean(clip.transition);
+      const label = has ? `${TRANSITION_TYPES.find((entry) => entry.id === clip.transition!.type)?.label} · ${formatSeconds(clip.transition!.duration)}s` : "";
+      return <button key={`cut-${clip.id}`} className={`cut-marker ${has ? "has" : "add"}`} style={{ left: clip.start * pps }}
+        disabled={track.locked}
+        title={has ? `Transição: ${label} (clique para ajustar)` : "Adicionar transição neste corte"}
+        onPointerDown={(event) => event.stopPropagation()}
+        onClick={(event) => { event.stopPropagation(); if (has) props.onSelectClip(clip); else props.onAddTransition(clip.id); }}>
+        {has ? <span className="cut-diamond" /> : "+"}
+      </button>;
+    });
+  }
+
   function renderClip(clip: TimelineClip, locked: boolean) {
     const item = mediaById.get(clip.mediaId);
     const audio = item?.kind === "audio";
@@ -521,6 +539,7 @@ export default function Timeline(props: Props) {
                 style={{ width: laneWidth, backgroundImage: laneBackground }} onPointerDown={laneClick}
 >
                 {clips.filter((clip) => trackOf(clip) === track.id).map((clip) => renderClip(clip, track.locked))}
+                {track.kind === "video" && !drag && renderCuts(track)}
                 {mediaGhost(track.id)}
               </div>
             </div>;
