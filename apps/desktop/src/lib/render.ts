@@ -1,6 +1,6 @@
 import type { CaptionStyle, MediaItem, TimelineClip, TimelineState } from "../types";
 import { clipEnd, clipSpeed } from "./timeline";
-import { clipVolume, effectiveFades, trackVolume } from "./audio";
+import { activeDucking, clipVolume, duckGainExpr, effectiveFades, trackAudible, trackVolume, voiceRanges } from "./audio";
 import { clipTransformExpr, fadeBlend, motionFilters } from "./renderMotion";
 import { effectiveAnimations } from "./animations";
 import { effectiveTransition, extensionAfter, outgoingTransition, transitionBlendExprs } from "./transitions";
@@ -37,6 +37,8 @@ export type RenderSettings = {
   fps: number;
   crf: number;
   preset: string;
+  /** Normaliza o volume final para o padrão das redes (−14 LUFS). */
+  normalize?: boolean;
 };
 
 export type ProbeInfo = { hasVideo: boolean; hasAudio: boolean };
@@ -123,6 +125,9 @@ export function buildRenderPlan(
   const audioLabels: string[] = [];
   chains.push(`color=c=black:s=${width}x${height}:r=${fps}:d=${num(total)},format=yuv420p[base]`);
 
+  const ducking = activeDucking(state.tracks);
+  const voice = ducking ? voiceRanges(state.clips.filter((clip) => clip.start < total), ducking.voiceTracks, ducking.ducking.fade) : [];
+
   clips.forEach((clip) => {
     const item = mediaById.get(clip.mediaId);
     const track = trackById.get(clip.trackId);
@@ -132,7 +137,7 @@ export function buildRenderPlan(
     const length = Math.min(clip.duration, total - clip.start);
     const speed = clipSpeed(clip);
     const showsImage = track.kind === "video" && !track.hidden && item.kind !== "audio" && probe.hasVideo;
-    const hasSound = !track.muted && item.kind !== "image" && probe.hasAudio;
+    const hasSound = trackAudible(track, state.tracks) && item.kind !== "image" && probe.hasAudio;
     if (!showsImage && !hasSound) return;
     // Transição para o próximo clipe: a imagem deste continua por baixo durante ela (o som não).
     const extension = showsImage ? Math.max(0, Math.min(extensionAfter(clip, state.clips), total - clip.start - length)) : 0;
@@ -215,6 +220,8 @@ export function buildRenderPlan(
       if (fades.fadeOut > 0) filters.push(`afade=t=out:st=${num(length - fades.fadeOut)}:d=${num(fades.fadeOut)}`);
       filters.push(`atrim=duration=${num(length)}`);
       if (clip.start > 0) filters.push(`adelay=delays=${Math.round(clip.start * 1000)}:all=1`);
+      // Abaixa sob a voz (ducking): só nas trilhas que não são de voz; t = tempo da timeline.
+      if (ducking && !ducking.voiceTracks.has(clip.trackId) && voice.length) filters.push(`volume=eval=frame:volume='${duckGainExpr(voice, ducking.ducking)}'`);
       const label = `a${audioLabels.length}`;
       chains.push(`[${index}:a]${filters.join(",")}[${label}]`);
       audioLabels.push(label);
@@ -230,7 +237,9 @@ export function buildRenderPlan(
   chains.push(`[${current}]format=yuv420p[vout]`);
   if (audioLabels.length) {
     // Silêncio até o fim do vídeo, com duração finita (apad sem limite gera tempos inválidos).
-    const pad = `apad=whole_dur=${num(total)},atrim=duration=${num(total)},asetpts=N/SR/TB`;
+    // Normalizar: volume final no padrão das redes (−14 LUFS, pico −1,5 dB); o loudnorm sai em 192 kHz.
+    const loud = settings.normalize ? "loudnorm=I=-14:TP=-1.5:LRA=11,aresample=48000," : "";
+    const pad = `${loud}apad=whole_dur=${num(total)},atrim=duration=${num(total)},asetpts=N/SR/TB`;
     chains.push(audioLabels.length === 1
       ? `[${audioLabels[0]}]${pad}[aout]`
       : `${audioLabels.map((label) => `[${label}]`).join("")}amix=inputs=${audioLabels.length}:normalize=0:dropout_transition=0,${pad}[aout]`);

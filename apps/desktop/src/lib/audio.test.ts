@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { clampFade, clipGainAt, clipVolume, computePeaks, effectiveFades, trackVolume } from "./audio";
+import { activeDucking, clampFade, clipGainAt, clipVolume, computePeaks, dbToGain, duckGainAt, duckGainExpr, effectiveFades, gainToDb, trackAudible, trackVolume, voiceRanges } from "./audio";
 import { splitClip } from "./timeline";
+import type { Track } from "../types";
 import { overwriteRange } from "./tracks";
 
 const clip = { id: "a", mediaId: "m", trackId: "t", start: 10, duration: 10, inPoint: 0 };
@@ -56,5 +57,39 @@ describe("computePeaks", () => {
   });
   it("silêncio não divide por zero", () => {
     expect(Array.from(computePeaks([[0, 0, 0, 0]], 2, 1))).toEqual([0, 0]);
+  });
+});
+
+describe("mixagem", () => {
+  const track = (id: string, extra: Partial<Track> = {}): Track => ({ id, kind: "audio", hidden: false, muted: false, locked: false, ...extra });
+  it("solo e mudo", () => {
+    const tracks = [track("a"), track("b", { solo: true }), track("c", { muted: true, solo: true })];
+    expect(tracks.map((entry) => trackAudible(entry, tracks))).toEqual([false, true, false]);
+    expect(trackAudible(track("x"), [track("x")])).toBe(true);
+  });
+  it("trechos de fala juntam pausas curtas", () => {
+    const clips = [{ trackId: "v", start: 0, duration: 2 }, { trackId: "v", start: 2.4, duration: 1 }, { trackId: "v", start: 6, duration: 1 }, { trackId: "m", start: 0, duration: 9 }];
+    expect(voiceRanges(clips, new Set(["v"]), 0.3)).toEqual([[0, 3.4], [6, 7]]);
+  });
+  it("a música desce antes da fala e sobe depois (preview = exportação)", () => {
+    const ranges: [number, number][] = [[2, 4], [8, 9]];
+    const ducking = { amount: 0.25, fade: 0.5 };
+    expect(duckGainAt(ranges, ducking, 0)).toBe(1);
+    expect(duckGainAt(ranges, ducking, 1.75)).toBeCloseTo(0.625);
+    expect(duckGainAt(ranges, ducking, 3)).toBeCloseTo(0.25);
+    expect(duckGainAt(ranges, ducking, 4.25)).toBeCloseTo(0.625);
+    const expr = duckGainExpr(ranges, ducking);
+    const F = { min: Math.min, clip: (v: number, a: number, b: number) => Math.min(b, Math.max(a, v)) };
+    const run = (t: number) => new Function("F", "t", `return ${expr.replace(/\b(min|clip)\(/g, "F.$1(")};`)(F, t);
+    for (const t of [0, 1.6, 1.75, 2, 3, 4.1, 4.25, 4.6, 7.8, 8.5, 9.3, 12]) expect(run(t), `t=${t}`).toBeCloseTo(duckGainAt(ranges, ducking, t), 6);
+  });
+  it("abaixada vigente e decibéis", () => {
+    const tracks = [track("v1", { ducking: { amount: 0.3, fade: 0.2 } }), track("v2", { ducking: { amount: 0.1, fade: 0.4 } }), track("m")];
+    const active = activeDucking(tracks)!;
+    expect(active.ducking).toEqual({ amount: 0.1, fade: 0.4 });
+    expect([...active.voiceTracks]).toEqual(["v1", "v2"]);
+    expect(activeDucking([track("m")])).toBeNull();
+    expect(gainToDb(0.25)).toBe(-12);
+    expect(dbToGain(-12)).toBeCloseTo(0.251, 3);
   });
 });

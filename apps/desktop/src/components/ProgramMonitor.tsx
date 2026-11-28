@@ -5,7 +5,7 @@ import { Fragment } from "react";
 import type { ClipPlacement, MediaItem, TimelineClip, Track } from "../types";
 import { clipsAt } from "../lib/tracks";
 import { clipSpeed } from "../lib/timeline";
-import { clipGainAt, trackVolume } from "../lib/audio";
+import { activeDucking, clipGainAt, duckGainAt, trackAudible, trackVolume, voiceRanges } from "../lib/audio";
 import { clipFrameAt, DEFAULT_FIT, frameTransform } from "../lib/effects";
 import { animationTransform, clipAnimationAt } from "../lib/animations";
 import { effectiveTransition, motionTransform, transitionLook, transitionMotion, transitionProgress, type TransitionMotion } from "../lib/transitions";
@@ -137,7 +137,12 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
     setAspects((current) => Math.abs((current.get(mediaId) ?? 0) - aspect) < 1e-6 ? current : new Map(current).set(mediaId, aspect));
 
   const active = clipsAt(clips, playhead);
-  const gainOf = (clip: TimelineClip) => clipGainAt(clip, playhead) * trackVolume(trackById.get(clip.trackId));
+  // Mixagem: solo/mudo e a música abaixando sob a voz (mesma conta da exportação).
+  const ducking = useMemo(() => activeDucking(tracks), [tracks]);
+  const voice = useMemo(() => ducking ? voiceRanges(clips, ducking.voiceTracks, ducking.ducking.fade) : [], [clips, ducking]);
+  const audible = (track: Track | undefined) => trackAudible(track, tracks);
+  const gainOf = (clip: TimelineClip) => clipGainAt(clip, playhead) * trackVolume(trackById.get(clip.trackId))
+    * (ducking && !ducking.voiceTracks.has(clip.trackId) ? duckGainAt(voice, ducking.ducking, playhead) : 1);
 
   // Camadas visíveis, de baixo (primeira trilha de vídeo) para cima.
   const layers: Layer[] = [];
@@ -164,7 +169,7 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
   const sounds = active.filter((clip) => {
     const item = playable(clip);
     const track = trackById.get(clip.trackId);
-    return !layerIds.has(clip.id) && item && item.kind !== "image" && track && !track.muted;
+    return !layerIds.has(clip.id) && item && item.kind !== "image" && track && audible(track);
   });
 
   // Cortina e círculo: recorte em coordenadas do quadro (raio do círculo em px da meia-diagonal).
@@ -303,7 +308,7 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
           ? <img className="preview-media" style={style} src={item.url} alt="" draggable={false}
               onLoad={(event) => { const img = event.currentTarget; if (img.naturalWidth && img.naturalHeight) rememberAspect(item.id, img.naturalWidth / img.naturalHeight); }} />
           : <SyncedMedia kind="video" url={item.url} clip={clip} playhead={playhead} playing={playing}
-              muted={track.muted || Boolean(outgoing)} volume={gainOf(clip)} visible style={style} onAspect={(aspect) => rememberAspect(item.id, aspect)} />}
+              muted={!audible(track) || Boolean(outgoing)} volume={gainOf(clip)} visible style={style} onAspect={(aspect) => rememberAspect(item.id, aspect)} />}
       </div>;
       // Cortina: recorta o clipe novo no quadro (fora da posição dele); Escurecer: véu preto por cima.
       return <Fragment key={clip.id}>

@@ -4,8 +4,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type { PointerEvent as ReactPointerEvent, CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers, Crop, Palette, Shuffle, Captions } from "lucide-react";
-import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind, ClipTransition, TransitionType, ClipColor } from "./types";
+import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers, Crop, Palette, Shuffle, Captions, SlidersHorizontal } from "lucide-react";
+import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind, ClipTransition, TransitionType, ClipColor, TrackDucking } from "./types";
 import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
@@ -15,7 +15,7 @@ import { formatCaptions, newCaptionAt, parseCaptions, shiftCaptions, sortCaption
 import CaptionsPanel, { CaptionOverlay } from "./components/CaptionsPanel";
 import EffectsPanel, { type ApplyAllOptions, type EffectsChange, type EffectsSection } from "./components/EffectsPanel";
 
-type PropsTab = "media" | EffectsSection | "captions";
+type PropsTab = "media" | EffectsSection | "audio" | "captions";
 import { makeMotion, MOTION_PRESETS, presetForIndex } from "./lib/effects";
 import { validAnimation } from "./lib/animations";
 import { validCaptionStyle } from "./lib/captionWords";
@@ -26,11 +26,13 @@ import ProgramMonitor from "./components/ProgramMonitor";
 import AssemblyDialog from "./components/AssemblyDialog";
 import ExportDialog from "./components/ExportDialog";
 import StartScreen from "./components/StartScreen";
+import MixerPanel from "./components/MixerPanel";
 import Splitter from "./components/Splitter";
 import { clampSide, clampTimeline, DEFAULT_DOCKS, loadDocks, loadLayout, moveDock, sameDocks, saveDocks, saveLayout, type Docks, type PanelId, type PanelLayout } from "./lib/layout";
 import UnsavedDialog from "./components/UnsavedDialog";
 import { isIdentity, validPlacement } from "./lib/placement";
 import { validColor } from "./lib/color";
+import { validDucking } from "./lib/audio";
 import { makeTransition, mixTransitions, previousAdjacent, validTransition } from "./lib/transitions";
 import { endDrag, moveDrag, resolveDrop, type DragPayload, type DropSpot } from "./lib/dragMedia";
 import { forgetProject, loadRecent, projectFileName, rememberProject, setRecentThumb, thumbnailSource, type RecentProject } from "./lib/recent";
@@ -697,6 +699,16 @@ export default function App() {
     }, change.volume !== undefined ? `volume:${clipId}` : undefined);
   }
 
+  /** Trilha de voz (ou não): enquanto ela fala, as outras abaixam. Mexer nos controles vira um só passo de desfazer. */
+  function setTrackDucking(trackId: string, ducking: TrackDucking | null) {
+    editTimeline((state) => ({ ...state, tracks: state.tracks.map((track) => {
+      if (track.id !== trackId) return track;
+      const next = { ...track };
+      if (ducking) next.ducking = ducking; else delete next.ducking;
+      return next;
+    }) }), ducking ? `ducking:${trackId}` : undefined);
+  }
+
   function setTrackVolume(trackId: string, volume: number) {
     const level = Math.round(Math.min(1, Math.max(0, volume)) * 100) / 100;
     editTimeline((state) => {
@@ -1327,7 +1339,9 @@ export default function App() {
         .map((track): Track => {
           const volume = Number(track.volume);
           return { id: track.id, kind: track.kind, hidden: Boolean(track.hidden), muted: Boolean(track.muted), locked: Boolean(track.locked),
-            ...(Number.isFinite(volume) && volume >= 0 && volume < 1 ? { volume } : {}) };
+            ...(Number.isFinite(volume) && volume >= 0 && volume < 1 ? { volume } : {}),
+            ...(track.solo ? { solo: true } : {}),
+            ...(validDucking(track.ducking) ? { ducking: validDucking(track.ducking)! } : {}) };
         });
       if (!restoredTracks.some((track) => track.kind === "video")) restoredTracks.unshift(newTrack("video"));
       if (!restoredTracks.some((track) => track.kind === "audio")) restoredTracks.push(newTrack("audio"));
@@ -1501,6 +1515,7 @@ export default function App() {
     { id: "color", label: "Cor", full: "Correção de cor do clipe", icon: Palette, needsClip: true },
     { id: "animation", label: "Animar", full: "Animação de entrada e saída do clipe", icon: Sparkles, needsClip: true },
     { id: "transition", label: "Transição", full: "Transição do clipe anterior para este", icon: Shuffle, needsClip: true },
+    { id: "audio", label: "Áudio", full: "Mixagem: volume, mudo, solo e voz de cada trilha", icon: SlidersHorizontal },
     { id: "captions", label: "Legendas", full: "Legendas e estilo", icon: Captions },
   ];
   const propertiesPanel = (
@@ -1536,6 +1551,7 @@ export default function App() {
         onApplyColorAll={applyColorToAll} />
         : <div className="properties-empty"><Clapperboard size={25} /><strong>Nenhum clipe selecionado</strong>
           <span>Clique num clipe de imagem ou vídeo na timeline (ou no preview) para ajustar {propsTab === "frame" ? "o enquadramento" : propsTab === "color" ? "a cor" : propsTab === "animation" ? "a animação" : "a transição"}.</span></div>)}
+      {propsTab === "audio" && <MixerPanel tracks={tracks} onSetVolume={setTrackVolume} onToggle={toggleTrack} onSetDucking={setTrackDucking} />}
       {propsTab === "captions" && <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
         onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />}
       <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {

@@ -49,7 +49,7 @@ type DragState = {
   shift: number;
 };
 
-export type TrackFlag = "hidden" | "muted" | "locked";
+export type TrackFlag = "hidden" | "muted" | "locked" | "solo";
 
 type Props = {
   media: MediaItem[];

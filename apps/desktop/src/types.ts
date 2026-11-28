@@ -27,7 +27,14 @@ export type Track = {
   locked: boolean;
   /** Volume da trilha (0–1). Ausente = 100%. */
   volume?: number;
+  /** Solo: com alguma trilha em solo, só as trilhas em solo tocam som. */
+  solo?: boolean;
+  /** Trilha de voz: enquanto ela fala, as outras abaixam (ducking). */
+  ducking?: TrackDucking;
 };
+
+/** Quanto as outras trilhas abaixam (ganho 0–1 durante a fala) e em quantos segundos descem/sobem. */
+export type TrackDucking = { amount: number; fade: number };
 
 export type TimelineClip = {
   id: string;

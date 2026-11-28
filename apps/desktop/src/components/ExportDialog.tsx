@@ -26,8 +26,8 @@ type Phase = { kind: "idle" } | { kind: "rendering"; done: number; startedAt: nu
 
 const SETTINGS_KEY = "sve.export";
 const FFMPEG_KEY = "sve.ffmpegPath";
-type Saved = { resolution: number; fps: number; quality: string; speed: string; burnCaptions: boolean };
-const DEFAULTS: Saved = { resolution: 1080, fps: 30, quality: "good", speed: "medium", burnCaptions: true };
+type Saved = { resolution: number; fps: number; quality: string; speed: string; burnCaptions: boolean; normalize: boolean };
+const DEFAULTS: Saved = { resolution: 1080, fps: 30, quality: "good", speed: "medium", burnCaptions: true, normalize: true };
 
 function loadSaved(): Saved {
   try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") }; } catch { return DEFAULTS; }
@@ -54,6 +54,7 @@ export default function ExportDialog({ state, media, captionStyle, ratio, projec
     ...size, fps: saved.fps,
     crf: QUALITY_PRESETS.find((entry) => entry.id === saved.quality)?.crf ?? 21,
     preset: saved.speed,
+    normalize: saved.normalize,
   };
 
   useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); }, [saved]);
@@ -183,6 +184,11 @@ export default function ExportDialog({ state, media, captionStyle, ratio, projec
             Gravar as legendas no vídeo ({state.captions.length}), com o estilo atual
             {!captionStyle.visible && <span className="export-hint"><Info size={12} /> estão ocultas no preview</span>}
           </label>}
+
+          <label className="export-check">
+            <input type="checkbox" checked={saved.normalize} disabled={rendering} onChange={(event) => set({ normalize: event.target.checked })} />
+            Normalizar o volume (padrão das redes: −14 LUFS, sem estourar)
+          </label>
 
           {phase.kind === "rendering" && <div className="export-progress">
             <div className="export-bar"><div style={{ width: `${progress * 100}%` }} /></div>
