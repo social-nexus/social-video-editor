@@ -1,3 +1,4 @@
+import { FFMPEG_KEY, loadExportSettings, saveExportSettings, type ExportSettings } from "../lib/settings";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
 import { listen } from "@tauri-apps/api/event";
@@ -24,14 +25,8 @@ type FfmpegInfo = { path: string; version: string; major: number };
 type Phase = { kind: "idle" } | { kind: "rendering"; done: number; startedAt: number }
   | { kind: "done"; output: string; seconds: number } | { kind: "error"; message: string };
 
-const SETTINGS_KEY = "sve.export";
-const FFMPEG_KEY = "sve.ffmpegPath";
-type Saved = { resolution: number; fps: number; quality: string; speed: string; burnCaptions: boolean; normalize: boolean };
-const DEFAULTS: Saved = { resolution: 1080, fps: 30, quality: "good", speed: "medium", burnCaptions: true, normalize: true };
-
-function loadSaved(): Saved {
-  try { return { ...DEFAULTS, ...JSON.parse(localStorage.getItem(SETTINGS_KEY) ?? "{}") }; } catch { return DEFAULTS; }
-}
+type Saved = ExportSettings;
+const loadSaved = () => loadExportSettings();
 
 const inTauri = () => "__TAURI_INTERNALS__" in window;
 const safeName = (name: string) => name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").trim() || "video";
@@ -57,7 +52,7 @@ export default function ExportDialog({ state, media, captionStyle, ratio, projec
     normalize: saved.normalize,
   };
 
-  useEffect(() => { localStorage.setItem(SETTINGS_KEY, JSON.stringify(saved)); }, [saved]);
+  useEffect(() => { saveExportSettings(saved); }, [saved]);
 
   // Procura o ffmpeg (o escolhido ou o do PATH).
   useEffect(() => {

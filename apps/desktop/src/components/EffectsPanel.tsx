@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { cleanPlacement, isIdentity, placementOf } from "../lib/placement";
-import { DEFAULT_TRANSITION_DURATION, makeTransition, MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION, TRANSITION_TYPES } from "../lib/transitions";
+import { appSettings } from "../lib/settings";
+import { makeTransition, MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION, TRANSITION_TYPES } from "../lib/transitions";
 import { Clapperboard, Move, Palette, Shuffle, Sparkles } from "lucide-react";
 import { cleanColor, COLOR_FIELDS, COLOR_PRESETS, isNeutralColor, matchingColorPreset, NEUTRAL_COLOR } from "../lib/color";
 import type { AnimationType, ClipAnimation, ClipColor, ClipFit, ClipMotion, MotionPreset, TimelineClip, ClipPlacement, ClipTransition, TransitionType } from "../types";
@@ -164,7 +165,7 @@ function PlacementFields({ clip, onChange }: { clip: TimelineClip; onChange: (cl
 /** Transição do clipe anterior (colado na mesma trilha) para este, e o sorteio em todos os cortes. */
 function TransitionField({ clip, hasPrevious, cutCount, onChange, onApplyTransitionAll, onMixTransitions }: Props) {
   const current = clip.transition;
-  const duration = current?.duration ?? DEFAULT_TRANSITION_DURATION;
+  const duration = current?.duration ?? appSettings().transitionDuration;
   const [picks, setPicks] = useState<TransitionType[]>(["dissolve", "push-left", "zoom-in", "circle-open"]);
   const set = (type: TransitionType | "none", nextDuration = duration) =>
     onChange(clip.id, { transition: type === "none" ? null : makeTransition(type, nextDuration) });

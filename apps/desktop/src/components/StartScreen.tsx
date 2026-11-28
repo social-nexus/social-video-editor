@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { invoke } from "@tauri-apps/api/core";
-import { AlertTriangle, Clapperboard, Clock, FolderOpen, FolderSearch, Import, Plus, Search, WandSparkles, X } from "lucide-react";
+import { AlertTriangle, Clapperboard, Clock, FolderOpen, FolderSearch, Import, Plus, Search, Settings2, WandSparkles, X } from "lucide-react";
 import type { RecentProject } from "../lib/recent";
 import { formatWhen } from "../lib/recent";
 import { formatTimecode } from "../lib/time";
@@ -25,12 +25,13 @@ type Props = {
   onOpenRecent: (project: RecentProject) => void;
   onLocate: (project: RecentProject) => void;
   onForget: (project: RecentProject) => void;
+  onSettings: () => void;
 };
 
 const inTauri = () => "__TAURI_INTERNALS__" in window;
 
 /** Tela inicial: novo projeto, atalhos e projetos recentes. */
-export default function StartScreen({ version, recent, ratio, onRatioChange, onNew, onAutoAssembly, onImportMedia, onOpenDialog, onOpenRecent, onLocate, onForget }: Props) {
+export default function StartScreen({ version, recent, ratio, onRatioChange, onNew, onAutoAssembly, onImportMedia, onOpenDialog, onOpenRecent, onLocate, onForget, onSettings }: Props) {
   const [query, setQuery] = useState("");
   const [exists, setExists] = useState<Map<string, boolean>>(new Map());
 
@@ -58,6 +59,7 @@ export default function StartScreen({ version, recent, ratio, onRatioChange, onN
       <nav>
         <button className="start-nav active"><Plus size={16} /> Criar um projeto</button>
         <button className="start-nav" onClick={onOpenDialog} title="Ctrl+O"><FolderOpen size={16} /> Abrir projeto…</button>
+        <button className="start-nav" onClick={onSettings}><Settings2 size={16} /> Configurações</button>
       </nav>
       <small className="start-version">Social Video Editor v{version} · projeto local</small>
     </aside>

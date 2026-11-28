@@ -7,7 +7,8 @@ import { getCurrentWebview } from "@tauri-apps/api/webview";
 import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers, Crop, Palette, Shuffle, Captions, SlidersHorizontal } from "lucide-react";
 import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind, ClipTransition, TransitionType, ClipColor, TrackDucking } from "./types";
 import { DEFAULT_CAPTION_STYLE } from "./types";
-import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
+import { formatSeconds, formatTimecode, roundTime } from "./lib/time";
+import { appSettings } from "./lib/settings";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
 import { clipEnd, sourceDurationOf, splitClip, rippleFollowers, shiftClips } from "./lib/timeline";
 import { clampFade, formatPercent } from "./lib/audio";
@@ -27,6 +28,7 @@ import AssemblyDialog from "./components/AssemblyDialog";
 import ExportDialog from "./components/ExportDialog";
 import StartScreen from "./components/StartScreen";
 import MixerPanel from "./components/MixerPanel";
+import SettingsDialog from "./components/SettingsDialog";
 import Splitter from "./components/Splitter";
 import { clampSide, clampTimeline, DEFAULT_DOCKS, loadDocks, loadLayout, moveDock, sameDocks, saveDocks, saveLayout, type Docks, type PanelId, type PanelLayout } from "./lib/layout";
 import UnsavedDialog from "./components/UnsavedDialog";
@@ -77,7 +79,7 @@ export default function App() {
   const [playing, setPlaying] = useState(false);
   const [projectName, setProjectName] = useState("Projeto sem título");
   const [projectPath, setProjectPath] = useState<string | null>(null);
-  const [ratio, setRatio] = useState("9:16");
+  const [ratio, setRatio] = useState(() => appSettings().defaultRatio);
   const [appVersion, setAppVersion] = useState("0.1.0");
   const [notice, setNotice] = useState("Seu espaço de edição está pronto.");
   const [assemblyOpen, setAssemblyOpen] = useState(false);
@@ -206,6 +208,8 @@ export default function App() {
       return shiftClips(updated, followers, shift);
     });
   }
+
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   /** Mini-aba aberta no painel Propriedades. */
   const [propsTab, setPropsTab] = useState<PropsTab>("media");
@@ -480,7 +484,7 @@ export default function App() {
     const track = firstTrackFor(timelineRef.current.tracks, trackKindFor(item.kind));
     if (!track) { setNotice(`Todas as trilhas de ${item.kind === "audio" ? "áudio" : "vídeo"} estão travadas.`); return; }
     const knownDuration = sourceDurationOf(item);
-    const duration = roundTime(knownDuration ?? DEFAULT_IMAGE_DURATION);
+    const duration = roundTime(knownDuration ?? appSettings().imageDuration);
     const start = roundTime(trackEnd(timelineRef.current.clips, track.id));
     const clipId = crypto.randomUUID();
     editClips((current) => [...current, { id: clipId, mediaId: item.id, trackId: track.id, start, duration, inPoint: 0 }]);
@@ -497,7 +501,7 @@ export default function App() {
    */
   function addAsOverlay(item: MediaItem) {
     if (item.kind === "audio") return;
-    const duration = roundTime(sourceDurationOf(item) ?? DEFAULT_IMAGE_DURATION);
+    const duration = roundTime(sourceDurationOf(item) ?? appSettings().imageDuration);
     const start = roundTime(playheadRef.current);
     const clipId = crypto.randomUUID();
     let created = false;
@@ -522,7 +526,7 @@ export default function App() {
   function dropMediaItem(item: MediaItem, target: string | TrackKind, start: number, knownDuration?: number): string | null {
     if (item.missing) return null;
     const kind = trackKindFor(item.kind);
-    const duration = roundTime(knownDuration ?? sourceDurationOf(item) ?? DEFAULT_IMAGE_DURATION);
+    const duration = roundTime(knownDuration ?? sourceDurationOf(item) ?? appSettings().imageDuration);
     const clipId = crypto.randomUUID();
     let usedTrack: string | null = null;
     editTimeline((state) => {
@@ -555,7 +559,7 @@ export default function App() {
   }
 
   const dragPayloadOf = (item: MediaItem): DragPayload =>
-    ({ name: item.name, kind: trackKindFor(item.kind), duration: roundTime(sourceDurationOf(item) ?? DEFAULT_IMAGE_DURATION) });
+    ({ name: item.name, kind: trackKindFor(item.kind), duration: roundTime(sourceDurationOf(item) ?? appSettings().imageDuration) });
 
   /** Arrastar da biblioteca (com o mouse): depois de 5 px vira arraste; ao soltar na timeline, entra ali. */
   function beginLibraryDrag(event: ReactPointerEvent<HTMLDivElement>, item: MediaItem) {
@@ -624,7 +628,7 @@ export default function App() {
       const item = byPath.get(path.toLowerCase());
       if (!item || item.missing) continue;
       if (trackKindFor(item.kind) !== spotKind) { skipped++; continue; }
-      const duration = item.kind === "image" ? DEFAULT_IMAGE_DURATION : durations.get(item.id) ?? item.duration ?? DEFAULT_IMAGE_DURATION;
+      const duration = item.kind === "image" ? appSettings().imageDuration : durations.get(item.id) ?? item.duration ?? appSettings().imageDuration;
       const used = dropMediaItem(item, target, start, duration);
       if (!used) continue;
       target = used;
@@ -650,7 +654,7 @@ export default function App() {
         const first = data.paths.find((path) => kindFromFileName(fileNameOf(path)) !== "other") ?? data.paths[0];
         const kind = first ? kindFromFileName(fileNameOf(first)) : "other";
         payload = { name: `${first ? fileNameOf(first) : "arquivos"}${data.paths.length > 1 ? ` +${data.paths.length - 1}` : ""}`,
-          kind: kind === "audio" ? "audio" : "video", duration: DEFAULT_IMAGE_DURATION };
+          kind: kind === "audio" ? "audio" : "video", duration: appSettings().imageDuration };
       }
       if (data.type === "enter" || data.type === "over") {
         setFilesOver(true);
@@ -1131,7 +1135,7 @@ export default function App() {
 
   // ---- Atalhos de teclado --------------------------------------------------------
   function handleShortcut(event: KeyboardEvent) {
-    if (assemblyOpen || exportOpen || unsaved) return;
+    if (assemblyOpen || exportOpen || unsaved || settingsOpen) return;
     const ctrl = event.ctrlKey || event.metaKey;
     const key = event.key.toLowerCase();
     // Atalhos de arquivo: valem também com o cursor num campo de texto.
@@ -1450,6 +1454,9 @@ export default function App() {
     return () => { void off.then((unlisten) => unlisten()); };
   }, []);
 
+  const settingsDialog = settingsOpen && <SettingsDialog version={appVersion} recentCount={recent.length} onClose={() => setSettingsOpen(false)}
+    onResetPanels={resetPanels} onNotice={setNotice}
+    onClearRecent={() => { recent.forEach((project) => forgetProject(project.path)); setRecent([]); setNotice("Lista de projetos recentes limpa (os arquivos continuam onde estão)."); }} />;
   const unsavedDialog = unsaved && <UnsavedDialog projectName={projectName} action={unsaved.action} saving={savingBeforeLeave}
     onSave={() => void saveThenLeave()} onDiscard={() => { const { run } = unsaved; setUnsaved(null); run(); }} onCancel={() => setUnsaved(null)} />;
 
@@ -1461,8 +1468,10 @@ export default function App() {
       onOpenDialog={() => void openFromHome()}
       onOpenRecent={(project) => void openProjectAt(project.path)}
       onLocate={(project) => void locateRecent(project)}
-      onForget={(project) => setRecent(forgetProject(project.path))} />
+      onForget={(project) => setRecent(forgetProject(project.path))}
+      onSettings={() => setSettingsOpen(true)} />
     <div className="start-notice">{notice}</div>
+    {settingsDialog}
     {unsavedDialog}
   </>;
 
@@ -1585,7 +1594,7 @@ export default function App() {
           <button className="button primary" onClick={() => void saveProject()} title="Salvar (Ctrl+S)"><Save size={16} /> Salvar</button>
           <button className="button secondary" onClick={() => void saveProjectAs()} title="Salvar como (Ctrl+Shift+S)">Salvar como</button>
           <button className="button primary" disabled={!clips.length} onClick={() => setExportOpen(true)} title="Gerar o vídeo final em MP4 (Ctrl+E)"><Download size={16} /> Exportar</button>
-          <button className="icon-button" title="Configurações" onClick={() => setNotice("As configurações serão implementadas nas próximas etapas.")}><Settings2 size={18} /></button>
+          <button className="icon-button" title="Configurações" onClick={() => setSettingsOpen(true)}><Settings2 size={18} /></button>
         </div>
       </header>
 
@@ -1670,7 +1679,7 @@ export default function App() {
             onMoveClip={moveClip}
             onDropMedia={dropMedia}
             onAddTransition={(clipId) => {
-              updateClipEffects(clipId, { transition: makeTransition("dissolve") });
+              updateClipEffects(clipId, { transition: makeTransition("dissolve", appSettings().transitionDuration) });
               setSelectedClipId(clipId);
               setSelectedCaptionId(null);
               setNotice("Transição “Dissolver” adicionada. Ajuste o tipo e a duração em Propriedades.");
@@ -1703,6 +1712,7 @@ export default function App() {
         </div>)}
       </div>}
       {unsavedDialog}
+      {settingsDialog}
       {filesOver && <div className="files-over-hint">Solte os arquivos: em qualquer lugar entram na biblioteca; numa trilha da timeline, já entram no ponto onde soltar.</div>}
       {exportOpen && <ExportDialog state={timeline} media={media} captionStyle={captionStyle} ratio={ratio} projectName={projectName}
         onClose={() => setExportOpen(false)} onNotice={setNotice} />}
