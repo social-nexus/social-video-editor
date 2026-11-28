@@ -3,7 +3,7 @@ import { clipEnd, clipSpeed } from "./timeline";
 import { activeDucking, clipVolume, duckGainExpr, effectiveFades, trackAudible, trackVolume, voiceRanges } from "./audio";
 import { clipTransformExpr, fadeBlend, motionFilters } from "./renderMotion";
 import { effectiveAnimations } from "./animations";
-import { effectiveTransition, extensionAfter, outgoingTransition, transitionBlendExprs } from "./transitions";
+import { effectiveTransition, extensionAfter, outgoingTransition, pixelateFilters, pixelBlockExprs, transitionBlendExprs } from "./transitions";
 import { buildAssCaptions } from "./assCaptions";
 import { isIdentity, placementFilters } from "./placement";
 import { colorFilters, isNeutralColor } from "./color";
@@ -159,7 +159,14 @@ export function buildRenderPlan(
       const hold = extension > 0 && item.kind !== "image" ? `,tpad=stop_mode=clone:stop_duration=${num(extension)},trim=duration=${num(visible)}` : "";
       // Correção de cor antes do enquadramento (em RGBA, mantém a transparência).
       const color = isNeutralColor(clip.color) ? "" : `,${colorFilters(clip.color!).join(",")}`;
-      const prepared = `[${index}:v]${timing},fps=${fps}${hold}${color},${fitFilter(clip, width, height)},setsar=1`;
+      // Pixelar (transição): na entrada deste clipe e/ou na saída para o próximo.
+      const incomingTransition = effectiveTransition(clip, state.clips)?.transition;
+      const outgoingTr = extension > 0 ? outgoingTransition(clip, state.clips) : null;
+      const pixelTerms: string[] = [];
+      if (incomingTransition?.type === "pixelate") pixelTerms.push(pixelBlockExprs(`clip(t/${num(incomingTransition.duration)},0,1)`).in);
+      if (outgoingTr?.type === "pixelate") pixelTerms.push(pixelBlockExprs(`clip((t-${num(length)})/${num(outgoingTr.duration)},0,1)`).out);
+      const pixelate = pixelTerms.length ? `,${pixelateFilters(pixelTerms.join("+"), width, height).join(",")}` : "";
+      const prepared = `[${index}:v]${timing},fps=${fps}${hold}${color},${fitFilter(clip, width, height)}${pixelate},setsar=1`;
       // Posição/tamanho/rotação (edição no preview): por último, por fora do movimento.
       const placed = isIdentity(clip.placement) ? { filters: [], x: "0", y: "0" } : placementFilters(clip.placement!, width, height);
       if (!placed) return; // ficou toda fora do quadro

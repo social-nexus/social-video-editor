@@ -8,7 +8,7 @@ import { clipSpeed } from "../lib/timeline";
 import { activeDucking, clipGainAt, duckGainAt, trackAudible, trackVolume, voiceRanges } from "../lib/audio";
 import { clipFrameAt, DEFAULT_FIT, frameTransform } from "../lib/effects";
 import { animationTransform, clipAnimationAt } from "../lib/animations";
-import { effectiveTransition, motionTransform, transitionLook, transitionMotion, transitionProgress, type TransitionMotion } from "../lib/transitions";
+import { effectiveTransition, motionTransform, pixelBlocks, transitionLook, transitionMotion, transitionProgress, type TransitionMotion } from "../lib/transitions";
 import { contrastFactor, isNeutralColor, svgMatrixValues } from "../lib/color";
 import { cleanPlacement, contentSize, hitsPlaced, placedCorners, placementOf, placementTransform, snapRotation, snapValue } from "../lib/placement";
 
@@ -154,15 +154,16 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
   const layerIds = new Set(layers.map((layer) => layer.clip.id));
 
   // Transições: no começo de um clipe com transição, o anterior (colado na mesma trilha) aparece por baixo.
-  type Drawn = Layer & { incoming?: ReturnType<typeof transitionLook>; outgoing?: boolean; motion?: TransitionMotion };
+  type Drawn = Layer & { incoming?: ReturnType<typeof transitionLook>; outgoing?: boolean; motion?: TransitionMotion; pixel?: number };
   const drawn: Drawn[] = layers.flatMap((layer): Drawn[] => {
     const effective = effectiveTransition(layer.clip, clips);
     const p = effective ? transitionProgress(layer.clip, effective.transition, playhead) : null;
     const fromItem = effective ? playable(effective.from) : null;
     if (!effective || p === null || !fromItem) return [layer];
     const motion = transitionMotion(effective.transition.type, p);
-    return [{ clip: effective.from, item: fromItem, track: layer.track, outgoing: true, motion: motion.out },
-      { ...layer, incoming: transitionLook(effective.transition.type, p), motion: motion.in }];
+    const pixels = pixelBlocks(effective.transition.type, p);
+    return [{ clip: effective.from, item: fromItem, track: layer.track, outgoing: true, motion: motion.out, pixel: pixels.out },
+      { ...layer, incoming: transitionLook(effective.transition.type, p), motion: motion.in, pixel: pixels.in }];
   });
 
   // Fontes de som: vídeos (exceto os visíveis, que já tocam no próprio elemento) e áudios.
@@ -171,6 +172,16 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
     const track = trackById.get(clip.trackId);
     return !layerIds.has(clip.id) && item && item.kind !== "image" && track && audible(track);
   });
+
+  // Bloco do Pixelar em px do preview (mesma fração da largura que a exportação usa); < 2 px = nítido.
+  const pixelPx = (fraction: number | undefined) => {
+    const block = Math.round((fraction ?? 0) * frame.width);
+    return block >= 2 ? block : 0;
+  };
+  const filterOf = (clip: TimelineClip, pixel: number | undefined) => [
+    pixelPx(pixel) ? `url(#px-${clip.id})` : "",
+    isNeutralColor(clip.color) ? "" : `url(#cc-${clip.id})`,
+  ].filter(Boolean).join(" ");
 
   // Cortina e círculo: recorte em coordenadas do quadro (raio do círculo em px da meia-diagonal).
   const transitionMask = (look: ReturnType<typeof transitionLook>): CSSProperties => {
@@ -281,6 +292,19 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
   return <>
     {/* Correção de cor: um filtro SVG por clipe (contraste por canal + matriz), igual à exportação. */}
     <svg className="color-filters" width="0" height="0" aria-hidden="true">
+      {/* Pixelar: um ponto por bloco, espalhado pelo bloco todo (mesmo bloco da exportação, em fração da largura). */}
+      {drawn.map(({ clip, pixel }) => {
+        const block = pixelPx(pixel);
+        if (!block) return null;
+        const dot = Math.max(1, Math.floor(block / 2));
+        return <filter key={`px-${clip.id}`} id={`px-${clip.id}`} x="0" y="0" width="100%" height="100%">
+          <feFlood x={dot} y={dot} width="1" height="1" floodColor="#000" />
+          <feComposite width={block} height={block} />
+          <feTile result="grid" />
+          <feComposite in="SourceGraphic" in2="grid" operator="in" />
+          <feMorphology operator="dilate" radius={dot} />
+        </filter>;
+      })}
       {drawn.filter(({ clip }) => !isNeutralColor(clip.color)).map(({ clip }) => {
         const c = contrastFactor(clip.color!);
         const func = { type: "linear", slope: c, intercept: 0.5 * (1 - c) } as const;
@@ -295,14 +319,14 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
       <strong>{clips.length ? "Nada na timeline neste ponto" : "A timeline está vazia"}</strong>
       <span>{clips.length ? "Mova o playhead para um trecho com clipes." : "Adicione clipes para ver a montagem aqui."}</span>
     </div>}
-    {drawn.map(({ clip, item, track, incoming, outgoing, motion }) => {
+    {drawn.map(({ clip, item, track, incoming, outgoing, motion, pixel }) => {
       // Enquadramento e movimento (Ken Burns) no instante do playhead.
       // A animação de entrada/saída fica por fora do Ken Burns; a posição fica por fora de tudo (na camada).
       const anim = clipAnimationAt(clip, playhead);
       const transform = [motion ? motionTransform(motion) : undefined, animationTransform(anim), frameTransform(clipFrameAt(clip, playhead))].filter(Boolean).join(" ");
       const opacity = anim.opacity * (incoming ? (incoming.hideIncoming ? 0 : incoming.opacity) : 1);
       const style: CSSProperties = { objectFit: clip.fit ?? DEFAULT_FIT, transform: transform || undefined, ...(opacity < 1 ? { opacity } : {}),
-        ...(isNeutralColor(clip.color) ? {} : { filter: `url(#cc-${clip.id})` }) };
+        ...(filterOf(clip, pixel) ? { filter: filterOf(clip, pixel) } : {}) };
       const layer = <div className="preview-layer" style={{ transform: placementTransform(clip.placement) }}>
         {item.kind === "image"
           ? <img className="preview-media" style={style} src={item.url} alt="" draggable={false}

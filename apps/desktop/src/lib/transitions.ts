@@ -24,6 +24,7 @@ export const TRANSITION_TYPES: { id: TransitionType; label: string }[] = [
   { id: "zoom-out", label: "Zoom para fora" },
   { id: "flip-x", label: "Virar na horizontal" },
   { id: "flip-y", label: "Virar na vertical" },
+  { id: "pixelate", label: "Pixelar" },
 ];
 
 export const DEFAULT_TRANSITION_DURATION = 0.5;
@@ -124,6 +125,35 @@ export function motionTransform(motion: TransitionMotion): string | undefined {
   return `translate(${round3(motion.x * 100)}%, ${round3(motion.y * 100)}%) scale(${round3(motion.s * motion.sx)}, ${round3(motion.s * motion.sy)})`;
 }
 
+/** Maior bloco do Pixelar, em fração da largura do quadro. */
+export const MAX_PIXEL_BLOCK = 0.06;
+
+/**
+ * Pixelar: tamanho do bloco (fração da largura do quadro; 0 = nítido) de quem sai e de quem entra.
+ * Quem sai vai pixelando até a metade; quem entra começa pixelado e fica nítido.
+ */
+export function pixelBlocks(type: TransitionType, p: number): { out: number; in: number } {
+  if (type !== "pixelate") return { out: 0, in: 0 };
+  return { out: MAX_PIXEL_BLOCK * Math.min(1, 2 * p), in: MAX_PIXEL_BLOCK * Math.min(1, Math.max(0, 2 - 2 * p)) };
+}
+
+/** Mesmo tamanho como expressão do ffmpeg (P = progresso 0–1 como expressão). */
+export function pixelBlockExprs(P: string): { out: string; in: string } {
+  return { out: `${MAX_PIXEL_BLOCK}*min(1,2*${P})`, in: `${MAX_PIXEL_BLOCK}*min(1,max(0,2-2*${P}))` };
+}
+
+/**
+ * Filtros do ffmpeg que pixelam uma camada W×H com bloco = `fraction`·W px (expressão em t local):
+ * reduz sem suavizar e amplia de volta (vizinho mais próximo). Bloco ≤ 1 px = imagem nítida.
+ */
+export function pixelateFilters(fraction: string, width: number, height: number): string[] {
+  const block = `max(1,${fraction}*${width})`;
+  return [
+    `scale=w='max(1,trunc(iw/${block}))':h='max(1,trunc(ih/${block}))':eval=frame:flags=neighbor`,
+    `scale=${width}:${height}:flags=neighbor`,
+  ];
+}
+
 /** Sorteia uma transição para cada corte, sem repetir a mesma em cortes seguidos (quando dá). */
 export function mixTransitions(picks: TransitionType[], count: number, random: () => number = Math.random): TransitionType[] {
   const result: TransitionType[] = [];
@@ -155,7 +185,7 @@ export function transitionLook(type: TransitionType, p: number):
     case "circle-open": return { opacity: 1, veil: 0, hideIncoming: false, circle: { open: true, radius: p } };
     case "circle-close": return { opacity: 1, veil: 0, hideIncoming: false, circle: { open: false, radius: 1 - p } };
     case "zoom-in": case "zoom-out": return { opacity: p, veil: 0, hideIncoming: false };
-    case "flip-x": case "flip-y": return { opacity: 1, veil: 0, hideIncoming: p < 0.5 };
+    case "flip-x": case "flip-y": case "pixelate": return { opacity: 1, veil: 0, hideIncoming: p < 0.5 };
     default: return { opacity: 1, veil: 0, hideIncoming: false };
   }
 }
@@ -181,7 +211,7 @@ export function transitionBlendExprs(type: TransitionType, start: number, durati
     case "circle-open": return same(`if(lt(hypot(X-W/2,Y-H/2),hypot(W,H)/2*${P}),A,B)`);
     case "circle-close": return same(`if(gte(hypot(X-W/2,Y-H/2),hypot(W,H)/2*(1-${P})),A,B)`);
     case "zoom-in": case "zoom-out": return same(`A*${P}+B*(1-${P})`);
-    case "flip-x": case "flip-y": return same(`if(lt(${P},0.5),B,A)`);
+    case "flip-x": case "flip-y": case "pixelate": return same(`if(lt(${P},0.5),B,A)`);
     default: return same("A");
   }
 }

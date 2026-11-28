@@ -73,7 +73,7 @@ export type ClipColor = { brightness: number; contrast: number; saturation: numb
 
 export type TransitionType = "dissolve" | "fade-black" | "wipe-left" | "wipe-right" | "wipe-up" | "wipe-down"
   | "push-left" | "push-right" | "push-up" | "push-down" | "circle-open" | "circle-close"
-  | "zoom-in" | "zoom-out" | "flip-x" | "flip-y";
+  | "zoom-in" | "zoom-out" | "flip-x" | "flip-y" | "pixelate";
 export type ClipTransition = { type: TransitionType; duration: number };
 
 export type ClipPlacement = { x: number; y: number; scale: number; rotation: number };

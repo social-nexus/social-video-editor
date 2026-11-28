@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   effectiveTransition, extensionAfter, makeTransition, mixTransitions, previousAdjacent, TRANSITION_TYPES, transitionBlendExprs, transitionLook,
-  transitionMotion, transitionMotionExpr, transitionProgress, validTransition,
+  transitionMotion, transitionMotionExpr, transitionProgress, validTransition, pixelBlocks, pixelBlockExprs, pixelateFilters, MAX_PIXEL_BLOCK,
 } from "./transitions";
 import type { TimelineClip } from "../types";
 
@@ -11,8 +11,8 @@ const clip = (id: string, start: number, duration: number, extra: Partial<Timeli
 /** Avalia uma expressão do ffmpeg (clip, if, lt, gte, max, cos, hypot, PI) com as variáveis dadas. */
 function evaluate(expr: string, vars: Record<string, number>) {
   const F = { clip: (v: number, a: number, b: number) => Math.min(b, Math.max(a, v)), if: (c: number, a: number, b: number) => c ? a : b,
-    lt: (a: number, b: number) => a < b ? 1 : 0, gte: (a: number, b: number) => a >= b ? 1 : 0, max: Math.max, cos: Math.cos, hypot: Math.hypot };
-  const js = expr.replace(/\b(clip|if|lt|gte|max|cos|hypot)\(/g, "F.$1(").replace(/\bPI\b/g, "Math.PI");
+    lt: (a: number, b: number) => a < b ? 1 : 0, gte: (a: number, b: number) => a >= b ? 1 : 0, max: Math.max, min: Math.min, cos: Math.cos, hypot: Math.hypot };
+  const js = expr.replace(/\b(clip|if|lt|gte|max|min|cos|hypot)\(/g, "F.$1(").replace(/\bPI\b/g, "Math.PI");
   return new Function("F", ...Object.keys(vars), `return ${js};`)(F, ...Object.values(vars));
 }
 
@@ -86,5 +86,20 @@ describe("transições", () => {
     mix.forEach((type, i) => { expect(["dissolve", "push-left", "zoom-in"]).toContain(type); if (i) expect(type).not.toBe(mix[i - 1]); });
     expect(mixTransitions(["flip-x"], 3)).toEqual(["flip-x", "flip-x", "flip-x"]);
     expect(mixTransitions([], 3)).toEqual([]);
+  });
+  it("pixelar: blocos crescem até a metade e somem no fim (preview = exportação)", () => {
+    expect(pixelBlocks("pixelate", 0)).toEqual({ out: 0, in: MAX_PIXEL_BLOCK });
+    expect(pixelBlocks("pixelate", 0.5)).toEqual({ out: MAX_PIXEL_BLOCK, in: MAX_PIXEL_BLOCK });
+    expect(pixelBlocks("pixelate", 1)).toEqual({ out: MAX_PIXEL_BLOCK, in: 0 });
+    expect(pixelBlocks("dissolve", 0.5)).toEqual({ out: 0, in: 0 });
+    for (const p of [0, 0.2, 0.5, 0.7, 1]) {
+      const exprs = pixelBlockExprs(String(p));
+      expect(evaluate(exprs.out, {}), `out p=${p}`).toBeCloseTo(pixelBlocks("pixelate", p).out, 6);
+      expect(evaluate(exprs.in, {}), `in p=${p}`).toBeCloseTo(pixelBlocks("pixelate", p).in, 6);
+    }
+    expect(pixelateFilters("0.05", 1080, 1920)).toEqual([
+      "scale=w='max(1,trunc(iw/max(1,0.05*1080)))':h='max(1,trunc(ih/max(1,0.05*1080)))':eval=frame:flags=neighbor",
+      "scale=1080:1920:flags=neighbor",
+    ]);
   });
 });
