@@ -6,6 +6,7 @@ import { effectiveAnimations } from "./animations";
 import { effectiveTransition, extensionAfter, outgoingTransition, transitionBlendExprs } from "./transitions";
 import { buildAssCaptions } from "./assCaptions";
 import { isIdentity, placementFilters } from "./placement";
+import { colorFilters, isNeutralColor } from "./color";
 
 /** Qualidade da exportação (CRF do x264: menor = melhor e maior). */
 export const QUALITY_PRESETS = [
@@ -151,7 +152,9 @@ export function buildRenderPlan(
         : `trim=duration=${num(visible * speed)},setpts=(PTS-STARTPTS)/${num(speed)}`;
       // Vídeo que acaba antes do fim da transição: segura o último quadro.
       const hold = extension > 0 && item.kind !== "image" ? `,tpad=stop_mode=clone:stop_duration=${num(extension)},trim=duration=${num(visible)}` : "";
-      const prepared = `[${index}:v]${timing},fps=${fps}${hold},${fitFilter(clip, width, height)},setsar=1`;
+      // Correção de cor antes do enquadramento (em RGBA, mantém a transparência).
+      const color = isNeutralColor(clip.color) ? "" : `,${colorFilters(clip.color!).join(",")}`;
+      const prepared = `[${index}:v]${timing},fps=${fps}${hold}${color},${fitFilter(clip, width, height)},setsar=1`;
       // Posição/tamanho/rotação (edição no preview): por último, por fora do movimento.
       const placed = isIdentity(clip.placement) ? { filters: [], x: "0", y: "0" } : placementFilters(clip.placement!, width, height);
       if (!placed) return; // ficou toda fora do quadro

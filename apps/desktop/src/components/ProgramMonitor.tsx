@@ -9,6 +9,7 @@ import { clipGainAt, trackVolume } from "../lib/audio";
 import { clipFrameAt, DEFAULT_FIT, frameTransform } from "../lib/effects";
 import { animationTransform, clipAnimationAt } from "../lib/animations";
 import { effectiveTransition, motionTransform, transitionLook, transitionMotion, transitionProgress, type TransitionMotion } from "../lib/transitions";
+import { contrastFactor, isNeutralColor, svgMatrixValues } from "../lib/color";
 import { cleanPlacement, contentSize, hitsPlaced, placedCorners, placementOf, placementTransform, snapRotation, snapValue } from "../lib/placement";
 
 /** Tolerância de dessincronia antes de reposicionar a mídia (segundos). */
@@ -273,6 +274,17 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
   }
 
   return <>
+    {/* Correção de cor: um filtro SVG por clipe (contraste por canal + matriz), igual à exportação. */}
+    <svg className="color-filters" width="0" height="0" aria-hidden="true">
+      {drawn.filter(({ clip }) => !isNeutralColor(clip.color)).map(({ clip }) => {
+        const c = contrastFactor(clip.color!);
+        const func = { type: "linear", slope: c, intercept: 0.5 * (1 - c) } as const;
+        return <filter key={clip.id} id={`cc-${clip.id}`} colorInterpolationFilters="sRGB" x="0" y="0" width="100%" height="100%">
+          <feComponentTransfer><feFuncR {...func} /><feFuncG {...func} /><feFuncB {...func} /></feComponentTransfer>
+          <feColorMatrix type="matrix" values={svgMatrixValues(clip.color!)} />
+        </filter>;
+      })}
+    </svg>
     {!layers.length && <div className="preview-empty program-empty">
       <div className="preview-logo"><MonitorPlay size={31} /></div>
       <strong>{clips.length ? "Nada na timeline neste ponto" : "A timeline está vazia"}</strong>
@@ -284,7 +296,8 @@ export default function ProgramMonitor({ media, tracks, clips, playhead, playing
       const anim = clipAnimationAt(clip, playhead);
       const transform = [motion ? motionTransform(motion) : undefined, animationTransform(anim), frameTransform(clipFrameAt(clip, playhead))].filter(Boolean).join(" ");
       const opacity = anim.opacity * (incoming ? (incoming.hideIncoming ? 0 : incoming.opacity) : 1);
-      const style: CSSProperties = { objectFit: clip.fit ?? DEFAULT_FIT, transform: transform || undefined, ...(opacity < 1 ? { opacity } : {}) };
+      const style: CSSProperties = { objectFit: clip.fit ?? DEFAULT_FIT, transform: transform || undefined, ...(opacity < 1 ? { opacity } : {}),
+        ...(isNeutralColor(clip.color) ? {} : { filter: `url(#cc-${clip.id})` }) };
       const layer = <div className="preview-layer" style={{ transform: placementTransform(clip.placement) }}>
         {item.kind === "image"
           ? <img className="preview-media" style={style} src={item.url} alt="" draggable={false}

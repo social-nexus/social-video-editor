@@ -4,8 +4,8 @@ import { open, save } from "@tauri-apps/plugin-dialog";
 import type { PointerEvent as ReactPointerEvent, CSSProperties } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { getCurrentWebview } from "@tauri-apps/api/webview";
-import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers } from "lucide-react";
-import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind, ClipTransition, TransitionType } from "./types";
+import { AudioLines, Clapperboard, Download, Home, FolderInput, FolderOpen, FolderPlus, Image as ImageIcon, Import, Layers3, Music2, Pause, Play, Plus, Save, Settings2, Sparkles, Video, WandSparkles, X, MonitorPlay, Layers, Crop, Palette, Shuffle, Captions } from "lucide-react";
+import type { Caption, CaptionStyle, ClipAudio, ClipMotion, ClipGeometry, ClipPlacement, MediaItem, MediaKind, TimelineClip, TimelineState, Track, TrackKind, ClipTransition, TransitionType, ClipColor } from "./types";
 import { DEFAULT_CAPTION_STYLE } from "./types";
 import { DEFAULT_IMAGE_DURATION, formatSeconds, formatTimecode, roundTime } from "./lib/time";
 import { fileNameOf, formatSize, kindFromFileName, kindOfFile, MEDIA_EXTENSIONS, probeMediaDuration } from "./lib/media";
@@ -30,6 +30,7 @@ import Splitter from "./components/Splitter";
 import { clampSide, clampTimeline, DEFAULT_DOCKS, loadDocks, loadLayout, moveDock, sameDocks, saveDocks, saveLayout, type Docks, type PanelId, type PanelLayout } from "./lib/layout";
 import UnsavedDialog from "./components/UnsavedDialog";
 import { isIdentity, validPlacement } from "./lib/placement";
+import { validColor } from "./lib/color";
 import { makeTransition, mixTransitions, previousAdjacent, validTransition } from "./lib/transitions";
 import { endDrag, moveDrag, resolveDrop, type DragPayload, type DropSpot } from "./lib/dragMedia";
 import { forgetProject, loadRecent, projectFileName, rememberProject, setRecentThumb, thumbnailSource, type RecentProject } from "./lib/recent";
@@ -732,6 +733,7 @@ export default function App() {
       if (change.motion !== undefined) { if (change.motion) next.motion = change.motion; else delete next.motion; }
       if (change.placement !== undefined) { if (change.placement) next.placement = change.placement; else delete next.placement; }
       if (change.transition !== undefined) { if (change.transition) next.transition = change.transition; else delete next.transition; }
+      if (change.color !== undefined) { if (change.color) next.color = change.color; else delete next.color; }
       for (const which of ["animIn", "animOut"] as const) {
         const value = change[which];
         if (value !== undefined) { if (value) next[which] = value; else delete next[which]; }
@@ -742,7 +744,22 @@ export default function App() {
       : change.animIn ? `anim-in:${clipId}:${change.animIn.type}`
       : change.animOut ? `anim-out:${clipId}:${change.animOut.type}`
       : change.placement ? `place-field:${clipId}`
-      : change.transition ? `transition:${clipId}:${change.transition.type}` : undefined);
+      : change.transition ? `transition:${clipId}:${change.transition.type}`
+      : change.color ? `color:${clipId}` : undefined);
+  }
+
+  /** Mesma cor (ou as originais) em todas as imagens e vídeos das trilhas destravadas. */
+  function applyColorToAll(color: ClipColor | null) {
+    let changed = 0;
+    editClips((current) => current.map((clip) => {
+      if (isLocked(clip.trackId) || mediaOf(clip.mediaId)?.kind === "audio") return clip;
+      const next = { ...clip };
+      if (color) next.color = color; else delete next.color;
+      if (JSON.stringify(next) === JSON.stringify(clip)) return clip;
+      changed++;
+      return next;
+    }));
+    setNotice(changed ? `${color ? "Cor aplicada" : "Cores originais"} em ${changed} clipe(s). Ctrl+Z desfaz.` : "Nada para mudar.");
   }
 
   /** Sorteia entre os tipos escolhidos em todos os cortes (sem repetir em cortes seguidos). */
@@ -1338,7 +1355,8 @@ export default function App() {
           ...(validAnimation(clip.animIn) ? { animIn: validAnimation(clip.animIn)! } : {}),
           ...(validAnimation(clip.animOut) ? { animOut: validAnimation(clip.animOut)! } : {}),
           ...(validPlacement(clip.placement) ? { placement: validPlacement(clip.placement)! } : {}),
-          ...(validTransition(clip.transition) ? { transition: validTransition(clip.transition)! } : {}) }];
+          ...(validTransition(clip.transition) ? { transition: validTransition(clip.transition)! } : {}),
+          ...(validColor(clip.color) ? { color: validColor(clip.color)! } : {}) }];
       });
       setMedia(restoredMedia);
       setSelectedId(restoredMedia.find((item) => !item.missing)?.id ?? restoredMedia[0]?.id ?? null);
@@ -1476,13 +1494,14 @@ export default function App() {
   );
   // Mini-abas do painel Propriedades: uma parte por vez (mídia, enquadrar, animação, transição, legendas).
   const visualClip = selectedClip && mediaOf(selectedClip.mediaId)?.kind !== "audio" ? selectedClip : null;
-  const clipTab = propsTab === "frame" || propsTab === "animation" || propsTab === "transition";
-  const PROPS_TABS: { id: PropsTab; label: string; full: string; needsClip?: boolean }[] = [
-    { id: "media", label: "Mídia", full: "Arquivo selecionado na biblioteca" },
-    { id: "frame", label: "Quadro", full: "Enquadramento, posição e movimento do clipe", needsClip: true },
-    { id: "animation", label: "Animar", full: "Animação de entrada e saída do clipe", needsClip: true },
-    { id: "transition", label: "Transição", full: "Transição do clipe anterior para este", needsClip: true },
-    { id: "captions", label: "Legendas", full: "Legendas e estilo" },
+  const clipTab = propsTab === "frame" || propsTab === "color" || propsTab === "animation" || propsTab === "transition";
+  const PROPS_TABS: { id: PropsTab; label: string; full: string; icon: typeof Video; needsClip?: boolean }[] = [
+    { id: "media", label: "Mídia", full: "Arquivo selecionado na biblioteca", icon: ImageIcon },
+    { id: "frame", label: "Quadro", full: "Enquadramento, posição e movimento do clipe", icon: Crop, needsClip: true },
+    { id: "color", label: "Cor", full: "Correção de cor do clipe", icon: Palette, needsClip: true },
+    { id: "animation", label: "Animar", full: "Animação de entrada e saída do clipe", icon: Sparkles, needsClip: true },
+    { id: "transition", label: "Transição", full: "Transição do clipe anterior para este", icon: Shuffle, needsClip: true },
+    { id: "captions", label: "Legendas", full: "Legendas e estilo", icon: Captions },
   ];
   const propertiesPanel = (
     <aside className="properties-panel panel">
@@ -1491,7 +1510,7 @@ export default function App() {
         {PROPS_TABS.map((tab) => <button key={tab.id} role="tab" aria-selected={propsTab === tab.id}
           className={`props-tab ${propsTab === tab.id ? "active" : ""} ${tab.needsClip && !visualClip ? "dim" : ""}`}
           title={tab.needsClip && !visualClip ? `${tab.full} — selecione um clipe de imagem ou vídeo na timeline` : tab.full}
-          onClick={() => setPropsTab(tab.id)}>{tab.label}</button>)}
+          onClick={() => setPropsTab(tab.id)}><tab.icon size={13} /><span>{tab.label}</span></button>)}
       </div>
       {propsTab === "media" && <>
         {selected ? <div className="properties-content">
@@ -1512,9 +1531,11 @@ export default function App() {
         onChange={updateClipEffects} onApplyAll={applyMotionToAllImages} onCopyAnimations={copyAnimationsToImages}
         hasPrevious={Boolean(previousAdjacent(visualClip, clips))}
         cutCount={clips.filter((clip) => !isLocked(clip.trackId) && previousAdjacent(clip, clips)).length}
-        onApplyTransitionAll={applyTransitionToAllCuts} onMixTransitions={mixTransitionsOnCuts} />
+        onApplyTransitionAll={applyTransitionToAllCuts} onMixTransitions={mixTransitionsOnCuts}
+        visualClipCount={clips.filter((clip) => !isLocked(clip.trackId) && mediaOf(clip.mediaId)?.kind !== "audio").length}
+        onApplyColorAll={applyColorToAll} />
         : <div className="properties-empty"><Clapperboard size={25} /><strong>Nenhum clipe selecionado</strong>
-          <span>Clique num clipe de imagem ou vídeo na timeline (ou no preview) para ajustar {propsTab === "frame" ? "o enquadramento" : propsTab === "animation" ? "a animação" : "a transição"}.</span></div>)}
+          <span>Clique num clipe de imagem ou vídeo na timeline (ou no preview) para ajustar {propsTab === "frame" ? "o enquadramento" : propsTab === "color" ? "a cor" : propsTab === "animation" ? "a animação" : "a transição"}.</span></div>)}
       {propsTab === "captions" && <CaptionsPanel captions={captions} style={captionStyle} onImport={importCaptions} onExport={exportCaptions} onShift={shiftAllCaptions}
         onClear={clearCaptions} onStyleChange={(change) => setCaptionStyle((style) => ({ ...style, ...change }))} />}
       <input ref={captionInputRef} hidden type="file" accept=".srt,.vtt" onChange={async (event) => {

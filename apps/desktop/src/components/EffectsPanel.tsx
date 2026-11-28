@@ -1,15 +1,16 @@
 import { useState } from "react";
 import { cleanPlacement, isIdentity, placementOf } from "../lib/placement";
 import { DEFAULT_TRANSITION_DURATION, makeTransition, MAX_TRANSITION_DURATION, MIN_TRANSITION_DURATION, TRANSITION_TYPES } from "../lib/transitions";
-import { Clapperboard, Move, Shuffle, Sparkles } from "lucide-react";
-import type { AnimationType, ClipAnimation, ClipFit, ClipMotion, MotionPreset, TimelineClip, ClipPlacement, ClipTransition, TransitionType } from "../types";
+import { Clapperboard, Move, Palette, Shuffle, Sparkles } from "lucide-react";
+import { cleanColor, COLOR_FIELDS, COLOR_PRESETS, isNeutralColor, matchingColorPreset, NEUTRAL_COLOR } from "../lib/color";
+import type { AnimationType, ClipAnimation, ClipColor, ClipFit, ClipMotion, MotionPreset, TimelineClip, ClipPlacement, ClipTransition, TransitionType } from "../types";
 import { ANIMATION_TYPES, DEFAULT_ANIMATION_DURATION, effectiveAnimations, makeAnimation, MAX_ANIMATION_DURATION, MIN_ANIMATION_DURATION } from "../lib/animations";
 import { DEFAULT_FIT, DEFAULT_INTENSITY, makeMotion, MOTION_PRESETS } from "../lib/effects";
 
-export type EffectsChange = { motion?: ClipMotion | null; fit?: ClipFit; animIn?: ClipAnimation | null; animOut?: ClipAnimation | null; placement?: ClipPlacement | null; transition?: ClipTransition | null };
+export type EffectsChange = { motion?: ClipMotion | null; fit?: ClipFit; animIn?: ClipAnimation | null; animOut?: ClipAnimation | null; placement?: ClipPlacement | null; transition?: ClipTransition | null; color?: ClipColor | null };
 export type ApplyAllOptions = { choice: MotionPreset | "alternate"; intensity: number; smooth: boolean; fit: ClipFit | null };
 /** Qual parte do clipe o painel mostra (cada uma é uma mini-aba em Propriedades). */
-export type EffectsSection = "frame" | "animation" | "transition";
+export type EffectsSection = "frame" | "color" | "animation" | "transition";
 
 type Props = {
   section: EffectsSection;
@@ -26,6 +27,9 @@ type Props = {
   onApplyTransitionAll: (transition: ClipTransition | null) => void;
   /** Sorteia entre os tipos escolhidos em todos os cortes. */
   onMixTransitions: (types: TransitionType[], duration: number) => void;
+  /** Quantos clipes de imagem/vídeo há nas trilhas destravadas. */
+  visualClipCount: number;
+  onApplyColorAll: (color: ClipColor | null) => void;
 };
 
 const percent = (value: number) => `${Math.round(value * 100)}%`;
@@ -68,6 +72,13 @@ export default function EffectsPanel(props: Props) {
     <div className="tools-title"><Clapperboard size={15} /> Transição</div>
     <fieldset disabled={locked} className="effects-fields">
       <TransitionField {...props} />
+    </fieldset>
+  </div>;
+
+  if (section === "color") return <div className="tools-card effects-card">
+    <div className="tools-title"><Palette size={15} /> Cor</div>
+    <fieldset disabled={locked} className="effects-fields">
+      <ColorFields {...props} />
     </fieldset>
   </div>;
 
@@ -186,5 +197,28 @@ function TransitionField({ clip, hasPrevious, cutCount, onChange, onApplyTransit
           Sortear em todos os cortes ({cutCount})</button>
       </div>
     </>}
+  </>;
+}
+
+/** Correção de cor: filtros prontos e ajustes finos (o mesmo resultado no preview e na exportação). */
+function ColorFields({ clip, onChange, visualClipCount, onApplyColorAll }: Props) {
+  const color = clip.color ?? NEUTRAL_COLOR;
+  const preset = matchingColorPreset(clip.color);
+  const set = (next: ClipColor) => { const clean = cleanColor(next); onChange(clip.id, { color: isNeutralColor(clean) ? null : clean }); };
+  return <>
+    <div className="color-presets">
+      <button type="button" className={`mix-chip ${isNeutralColor(clip.color) ? "on" : ""}`} onClick={() => onChange(clip.id, { color: null })}>Original</button>
+      {COLOR_PRESETS.map((entry) => <button key={entry.id} type="button" className={`mix-chip ${preset === entry.id ? "on" : ""}`}
+        onClick={() => set(entry.color)}>{entry.label}</button>)}
+    </div>
+    {COLOR_FIELDS.map((field) => <label key={field.key} className="caption-setting color-field"><span>{field.label}</span>
+      <input type="range" min={field.min} max={field.max} step={0.01} value={color[field.key]} aria-label={field.label}
+        onChange={(event) => set({ ...color, [field.key]: Number(event.target.value) })}
+        onDoubleClick={() => set({ ...color, [field.key]: 0 })} title="Duplo clique volta ao normal" />
+      <b>{color[field.key] > 0 && field.key !== "sepia" ? "+" : ""}{Math.round(color[field.key] * 100)}</b></label>)}
+    {!isNeutralColor(clip.color) && <button className="link-button" onClick={() => onChange(clip.id, { color: null })}>Restaurar cores originais</button>}
+    {visualClipCount > 1 && <button className="button secondary compact full-width" onClick={() => onApplyColorAll(clip.color ?? null)}
+      title="Usa estes ajustes de cor em todas as imagens e vídeos das trilhas destravadas. Ctrl+Z desfaz.">
+      {isNeutralColor(clip.color) ? "Tirar a cor de todos os clipes" : "Usar esta cor em todos os clipes"} ({visualClipCount})</button>}
   </>;
 }

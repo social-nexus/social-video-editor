@@ -323,3 +323,11 @@ body.resizing-y, body.resizing-y * { cursor: row-resize !important; user-select:
 .props-tab { padding: 5px 4px; font-size: 9.5px; letter-spacing: -.1px; }
 /* Edição em cascata (ímã) */
 .ripple-toggle.on { color: #fff; background: linear-gradient(135deg, #ec4899, #fb923c); border-color: transparent; }
+.color-filters { position: absolute; width: 0; height: 0; overflow: hidden; pointer-events: none; }
+/* Mini-abas com ícone: na coluna estreita só a aba aberta mostra o nome */
+.properties-panel { container-type: inline-size; }
+.props-tab { display: inline-flex; align-items: center; justify-content: center; gap: 4px; flex: 0 0 auto; }
+.props-tab.active { flex: 1 1 auto; }
+@container (max-width: 340px) { .props-tab:not(.active) span { display: none; } .props-tab { padding: 5px 7px; } }
+.color-presets { display: flex; flex-wrap: wrap; gap: 4px; margin-bottom: 8px; }
+.color-field b { min-width: 30px; text-align: right; }

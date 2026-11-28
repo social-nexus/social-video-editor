@@ -57,7 +57,12 @@ export type TimelineClip = {
   placement?: ClipPlacement;
   /** Transição de entrada: do clipe anterior colado (mesma trilha) para este. Ausente = corte seco. */
   transition?: ClipTransition;
+  /** Correção de cor. Ausente = cores originais. */
+  color?: ClipColor;
 };
+
+/** Ajustes de cor: 0 = sem mudança (frações, ex.: contraste 0,2 = +20%). */
+export type ClipColor = { brightness: number; contrast: number; saturation: number; temperature: number; sepia: number };
 
 export type TransitionType = "dissolve" | "fade-black" | "wipe-left" | "wipe-right" | "wipe-up" | "wipe-down"
   | "push-left" | "push-right" | "push-up" | "push-down" | "circle-open" | "circle-close"
